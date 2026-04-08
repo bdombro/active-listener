@@ -27,5 +27,5 @@ release: build-cross
     ./scripts/release.sh
 
 # Smoke test the release binary with a sample WAV file
-smoke-test:
+smoke-test: build
     ./target/release/active-listener process ./tests/2026-04-08_165818.wav --dir .

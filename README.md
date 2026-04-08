@@ -1,106 +1,174 @@
 # Active Listener
 
-Record meetings — **fully local**. Each **`start`** session saves a **16 kHz mono WAV**, then runs **Whisper** and writes **markdown** (via [Candle](https://github.com/huggingface/candle)).
-
-## Why it's useful
-
-- **Privacy**: audio and transcripts stay on your machine; no cloud ASR required.
-- **Works with any call app**: choose sources with **`--mic`**, **`--system-audio`**, or both (e.g. `active-listener start --mic --system-audio`). System audio uses **macOS** (ScreenCaptureKit), **Windows** (WASAPI loopback), or **Linux** with **PipeWire** only (no PulseAudio fallback).
+Record and transcribe meetings using a CLI, fully local. Press Ctrl+C to stop — you get a WAV and a Whisper-transcribed markdown file. No cloud, no subscriptions.
 
 ## Quick start
+
+Download the binary for your platform from the [releases page](https://github.com/bdombro/active-listener/releases):
+
+| Platform | File |
+|---|---|
+| macOS Apple Silicon | `active-listener-*-aarch64-apple-darwin.tar.gz` |
+| macOS Intel | `active-listener-*-x86_64-apple-darwin.tar.gz` |
+| Linux x86_64 | `active-listener-*-x86_64-unknown-linux-gnu.tar.gz` |
+| Windows x86_64 | `active-listener-*-x86_64-pc-windows-gnu.tar.gz` |
+
+Extract and install (macOS / Linux):
+
+```bash
+tar -xzf active-listener-*.tar.gz
+./active-listener install
+source ~/.zshrc
+```
+
+`install` copies the binary to `~/.local/bin`, adds zsh completions, and pre-downloads the default Whisper weights (`small`) from Hugging Face. Diarization models are also pre-fetched so your first `--diarize` run starts immediately.
+
+> **Windows**: `install` is not supported — place `active-listener.exe` on your `PATH` manually and run it directly. Note that the Windows release binary is built without diarization support, so `--diarize` has no effect.
+
+**To build from source** (requires Rust 1.74+ and [just](https://github.com/casey/just)):
 
 ```bash
 just install
 ```
 
-Or without [just](https://github.com/casey/just):
+## Usage
 
 ```bash
-cargo build --release
-./target/release/active-listener install
-```
-
-After install, the binary is in `~/.local/bin`, zsh completions are configured, and the default Whisper weights (**`small`**) are downloaded from Hugging Face (use `active-listener install --whisper-model tiny` etc. to pick another size). When built with **`diarize`** (the default), **`install`** also downloads sherpa-onnx diarization assets (pyannote segmentation + **NeMo Titanet small** embedding) into `~/.cache/active-listener/diarize/`, so the first recording does not wait on those. Run `source ~/.zshrc` once.
-
-To remove the installed binary, the install-time `~/.zshrc` snippets, and **all** cached `openai/whisper-*` Hugging Face hub folders:
-
-```bash
-active-listener uninstall
-```
-
-## Basic usage
-
-```bash
-# Interactive source pick (TTY): choose mic, system audio, or both — or pass flags explicitly
+# Interactive: choose mic, system audio, or both (TTY only)
 active-listener start
 
-# Record until Ctrl+C; writes ./YYYY-MM-DD_HHMMSS.wav and .md (pass --mic and/or --system-audio)
+# Record mic only; write to current directory
+active-listener start --mic
+
+# Record mic + desktop audio (requires Screen Recording permission on macOS)
 active-listener start --mic --system-audio
 
-active-listener start --mic --dir .
-active-listener start --mic --system-audio --dir ~/notes --name standup
-active-listener start --mic --whisper-model tiny --cpu
+# Custom output folder and filename stem
+active-listener start --mic --dir ~/notes --name standup
 
-# Speaker labels: on by default after recording (default `cargo build` includes diarization)
-./target/release/active-listener start --mic --no-diarize   # skip labels
-./target/release/active-listener start --mic --num-speakers 3
-# Smaller binary without ONNX diarization, e.g.: cargo build --release --no-default-features --features metal,linux-system-audio
+# Speaker labels in the output (adds ~10–30s post-processing)
+active-listener start --mic --diarize
+
+# Transcribe an existing WAV (no re-record)
+active-listener process recording.wav --dir ~/notes
+active-listener process recording.wav --diarize
 ```
 
-Shell completions:
+## Output
 
-```bash
-active-listener completions zsh   # also: bash, fish
-# e.g. in ~/.zshrc: source <(active-listener completions zsh)
+Every session produces two files with the same basename:
+
+- **`YYYY-MM-DD_HHMMSS.wav`** — raw 16 kHz mono recording
+- **`YYYY-MM-DD_HHMMSS.md`** — frontmatter + transcript
+
+### Default (no `--diarize`)
+
+```markdown
+---
+date: 2026-04-08T14:30:00
+duration: 32m 15s
+whisper_model: small
+---
+
+# Meeting notes — 2026-04-08 14:30
+
+## Transcript
+
+**[00:00]** Welcome everyone, let's get started with today's standup.
+
+**[00:12]** I finished the auth refactor yesterday and pushed it for review.
+
+**[00:28]** Looks good to me, I'll take a look after this call.
+
+**[01:04]** Any blockers? Nothing from my side, shipping the feature branch today.
 ```
 
-## How it works
+### With `--diarize`
 
-```mermaid
-flowchart LR
-    Mic[Microphone cpal] --> Mix[Resample + mix 16kHz mono]
-    Sys[System audio] --> Mix
-    Mix --> WAV[WAV file]
-    Mix --> Whisper[Whisper Candle]
-    Whisper --> Transcript[Transcript]
-    Transcript --> MD[Markdown file]
+Whisper and the speaker diarizer run in parallel; labels are merged into the transcript by timestamp overlap.
+
+```markdown
+---
+date: 2026-04-08T14:30:00
+duration: 32m 15s
+whisper_model: small
+---
+
+# Meeting notes — 2026-04-08 14:30
+
+## Transcript
+
+**Speaker 1**
+
+**[00:00]** Welcome everyone, let's get started with today's standup.
+
+**Speaker 2**
+
+**[00:12]** I finished the auth refactor yesterday and pushed it for review.
+
+**Speaker 1**
+
+**[00:28]** Looks good to me, I'll take a look after this call.
+
+**Speaker 2**
+
+**[01:04]** No blockers, shipping the feature branch today.
 ```
 
-**Speaker diarization** (sherpa-onnx, included in default builds) runs after recording on the same 16 kHz samples as Whisper, in parallel with transcription; use **`--no-diarize`** to skip it. Labels are merged into the transcript section of the markdown by overlapping timestamps.
+Labels are `Speaker 1`, `Speaker 2`, … — not real names.
 
-1. **Capture** microphone and, when enabled, system audio (each resampled to 16 kHz mono, summed with soft clipping).
-2. Write that mix as a **WAV** (same basename as the markdown file, `.wav` extension).
-3. **Diarize** by default (opt out with `--no-diarize`) using sherpa-onnx models downloaded once from GitHub (segmentation tarball + NeMo Titanet **small** embedding), running **in parallel** with Whisper on the same audio. **Transcribe** with Whisper (default checkpoint **`small`**; weights from Hugging Face / `hf-hub` on first use), then write **markdown** with frontmatter and transcript; speaker headings are merged into the transcript by timestamp overlap.
+## Options
 
-## Security & privacy
+All flags work on both `start` and `process` unless noted.
 
-- Processing is **local**. No audio, transcript, or notes are sent to third parties by this app.
-- **Whisper weights** are downloaded once from Hugging Face (metadata only over the network; **no audio** is uploaded).
-- **Diarization** (default-on after recording unless `--no-diarize`; omit the `diarize` feature when building for a smaller binary): ONNX models are downloaded once from **GitHub** (sherpa-onnx releases) into `~/.cache/active-listener/diarize/`; **no audio** is uploaded. Labels are `Speaker 1`, `Speaker 2`, … (not real names).
-- **`active-listener uninstall`** removes **`~/.local/bin/active-listener`**, matching **`install`** snippets from **`~/.zshrc`**, and every **`openai/whisper-*`** directory under your Hugging Face hub cache.
-- **`active-listener install`** caches the chosen Whisper model (default **`small`**) and, with default features, sherpa-onnx diarization models under **`~/.cache/active-listener/diarize/`**.
-- Output **`.wav`** and **`.md`** contain raw audio / full transcript — protect them like any sensitive file.
-- **Microphone** permission is required by macOS when recording.
-- **Screen Recording** permission is required on macOS for system audio (System Settings → Privacy & Security).
-- **Linux**: PipeWire must be running. Native builds use the default `linux-system-audio` feature and need `libpipewire-0.3-dev` and `libspa-0.2-dev`. **Cross-compiled** Linux binaries from `just build-cross` use `--no-default-features` (no PipeWire, no diarization); build on Ubuntu 22.04+ with default features for full Linux system audio and speaker labels.
-- **Windows**: WASAPI loopback works on a normal desktop session. **Cross-compiled** Windows binaries from `just build-cross` use `--no-default-features` (no diarization); build natively with default features for speaker labels. Cross-compiling may require a toolchain with Windows SDK headers—build natively on Windows if `cross` fails.
+| Flag | Default | Description |
+|---|---|---|
+| `--mic` | off | Capture microphone (`start` only; at least one source required) |
+| `--system-audio` | off | Mix in desktop audio (`start` only) |
+| `--dir PATH` | `.` | Output directory |
+| `--name STEM` | datetime | Output filename without extension |
+| `--whisper-model` | `small` | `tiny` / `base` / `small` / `medium` / `large` |
+| `--diarize` | off | Add speaker labels via sherpa-onnx |
+| `--num-speakers N` | auto | Fix speaker count (more reliable than threshold mode) |
+| `--diarize-threshold` | `0.55` | Cluster merge/split — higher → fewer speakers |
+| `--diarize-embedding PATH` | auto | Custom speaker embedding ONNX (see below) |
+| `--duration SECS` | unlimited | Auto-stop after N seconds (`start` only) |
+| `--device NAME` | default | Mic device name — see `--list-devices` |
+| `--cpu` | off | Force CPU; skip Metal |
+| `--verbose` | off | Print device and model details |
 
-## Speaker diarization quality
+`ACTIVE_LISTENER_DIARIZE_EMBEDDING` is the env-var equivalent of `--diarize-embedding`.
 
-Offline diarization is **inherently fuzzy**: a single scalar threshold cannot separate “split one voice into two” vs “merge two people into one” in every room. Practical levers (all on `start` and `process`):
+## Speaker diarization
 
-1. **`--num-speakers N`** when you know the count (e.g. two-person call). This fixes the cluster size and usually behaves better than threshold-only mode.
-2. **`--diarize-threshold`** — coarse merge/split knob when `--num-speakers` is **not** set (higher → fewer speakers).
-3. **`--diarize-min-duration-on`** / **`--diarize-min-duration-off`** — sherpa-onnx segment cleanup (defaults `0.3` / `0.5` seconds). Slightly **higher** `min-duration-off` can smooth rapid speaker flips; **higher** `min-duration-on` drops very short regions (can remove noise or clip short words if pushed too far).
-4. **`--diarize-embedding`** (or env **`ACTIVE_LISTENER_DIARIZE_EMBEDDING`**) — path to a different 16 kHz speaker embedding ONNX. Default is NeMo **Titanet small** (auto-downloaded). Other models from [sherpa-onnx speaker-recongition-models](https://github.com/k2-fsa/sherpa-onnx/releases/tag/speaker-recongition-models) work via this flag if you want to experiment (e.g. **Titanet large** for higher quality at the cost of size and speed).
+Powered by [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) (pyannote segmentation + NeMo Titanet small embedding). Models are downloaded once to `~/.cache/active-listener/diarize/` on first use (or pre-fetched by `install`).
 
-For difficult audio (TV in the room, heavy reverb, single mixed channel), expect imperfect labels; there is no second-stage “smart” relabeling in this app today.
+Offline diarization is fuzzy — one threshold cannot perfectly split every conversation. Practical tips:
 
-## CLI options
+- **`--num-speakers N`** is the most reliable option when you know the count (two-person call, panel of three, etc.).
+- **`--diarize-threshold`** (default `0.55`) is the fallback knob: higher merges more aggressively (fewer speakers), lower splits more.
+- **`--diarize-embedding`** — swap in another sherpa-onnx embedding ONNX if you want to experiment (e.g. [Titanet large](https://github.com/k2-fsa/sherpa-onnx/releases/tag/speaker-recongition-models) for better accuracy at the cost of size and speed).
 
-Run `active-listener --help` for subcommands, or `active-listener start --help` for recording flags (colors, examples).
+Expect imperfect results in difficult audio (crosstalk, TV in the background, single mixed channel).
 
-Notable `start` / `process` flags: **`--mic`**, **`--system-audio`** (at least one required for `start`), **`--no-diarize`**, diarization group (**`--num-speakers`**, **`--diarize-threshold`**, **`--diarize-min-duration-on`**, **`--diarize-min-duration-off`**, **`--diarize-embedding`** / **`ACTIVE_LISTENER_DIARIZE_EMBEDDING`**), `--dir`, `--name`, `--whisper-model` (default **`small`**), `--duration`, `--device` (mic only), `--list-devices`, `--verbose`, `--cpu`.
+## Privacy
+
+- Everything runs locally. No audio, transcript, or metadata leaves your machine.
+- Whisper weights are downloaded from Hugging Face once (model files only; no audio uploaded).
+- Diarization models are downloaded from GitHub releases once (no audio uploaded).
+- `active-listener uninstall` removes the binary, shell snippets from `~/.zshrc`, and all cached `openai/whisper-*` Hugging Face hub folders.
+- The `.wav` and `.md` files contain raw audio and full transcripts — treat them accordingly.
+- macOS requires **Microphone** permission for `--mic` and **Screen Recording** for `--system-audio`.
+
+## Platform notes
+
+| Platform | Audio capture | Diarization |
+|---|---|---|
+| macOS | Mic (cpal) + ScreenCaptureKit system audio | Yes (`diarize` feature, default) |
+| Linux | Mic (cpal) + PipeWire (`linux-system-audio` feature, default) | Yes (native build); No (cross-compiled `--no-default-features` build) |
+| Windows | Mic (cpal) + WASAPI loopback | Yes (native build); No (cross-compiled build) |
+
+Linux native builds need `libpipewire-0.3-dev` and `libspa-0.2-dev`.
 
 ## Development
 
@@ -108,22 +176,23 @@ Requires [just](https://github.com/casey/just) (`brew install just`) and Rust 1.
 
 ```bash
 just build        # cargo build --release (native host)
-just install      # build + active-listener install (copies binary, configures shell)
-just build-cross  # macOS aarch64/x86_64 (Metal), Linux x86_64, Windows x86_64 GNU (CPU for non-macOS); needs Docker
-just release      # build-cross + GitHub release (needs `gh`)
+just install      # build + install binary + shell config
+just build-cross  # cross-compile: macOS aarch64/x86_64, Linux x86_64, Windows x86_64 (needs Docker)
+just release      # build-cross + GitHub release (needs gh)
 ```
 
-`just build-cross` requires [Docker](https://docs.docker.com/get-docker/) running and may install `cross` from git on first use (see [`scripts/build-cross.sh`](scripts/build-cross.sh)). For native development only, use `just build`. To try recording from a dev build: `cargo run -- start --mic` (writes WAV then markdown).
+Quick dev loop: `cargo run -- start --mic` — records, transcribes, writes WAV + markdown.
 
-If you see `rustup: command not found`, ensure `~/.cargo/bin` is on your PATH (`scripts/build-cross.sh` prepends it; use a normal user `HOME`).
-
-Cross-build logic also lives in [`scripts/build-cross.sh`](scripts/build-cross.sh); release packaging in [`scripts/release.sh`](scripts/release.sh) (invoked by `just`).
+To strip the diarization dependency for a smaller binary:
+```bash
+cargo build --release --no-default-features --features metal,linux-system-audio
+```
 
 ## Requirements
 
 - Rust 1.74+
-- macOS recommended for Metal (`metal` is a default feature). On other platforms use `cargo build --no-default-features` and enable the features you need (e.g. `diarize`, `linux-system-audio`) if Metal is unavailable or you are trimming the binary.
+- macOS: Metal is the default GPU backend (`metal` feature). On other platforms build with `--no-default-features` and re-add what you need.
 
 ## License
 
-Whisper decoding logic is adapted from the [candle-examples](https://github.com/huggingface/candle) Whisper example (same license as upstream Candle).
+MIT

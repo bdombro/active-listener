@@ -17,7 +17,7 @@ metal = [
 ]
 # PipeWire capture for Linux (requires libpipewire dev packages; disabled for `cross` Linux builds).
 linux-system-audio = ["dep:pipewire"]
-# Offline speaker diarization (sherpa-onnx + ONNX Runtime; larger binary; model download on first use). In default features; use `--no-default-features` plus only the features you need to drop it.
+# Offline speaker diarization (sherpa-onnx + ONNX Runtime; larger binary; model download on first use). In default features; enable at runtime with `--diarize`. Use `--no-default-features` plus only the features you need to drop it.
 diarize = [
     "dep:sherpa-onnx",
     "dep:ureq",
