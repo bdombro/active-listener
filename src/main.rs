@@ -70,9 +70,9 @@ impl From<WhisperSize> for WhichModel {
     name = "active-listener",
     version,
     about = "Record meetings; save WAV, then Whisper markdown.",
-    long_about = "Captures microphone and/or system audio. If you omit `--mic` and `--system-audio`, you are prompted interactively (TTY only; otherwise pass flags explicitly). After each recording, a 16 kHz mono WAV is written, then Whisper runs and markdown is saved. Speaker diarization runs in parallel with transcription by default unless you pass `--no-diarize` (requires a build with the `diarize` feature, which is enabled by default).",
+    long_about = "Captures microphone and/or system audio. If you omit `--mic` and `--system-audio`, you are prompted interactively (TTY only; otherwise pass flags explicitly). After each recording, a 16 kHz mono WAV is written, then Whisper runs and markdown is saved. Speaker diarization is off unless you pass `--diarize` (requires a build with the `diarize` feature, which is enabled by default).",
     styles = clap_styles(),
-    after_help = "EXAMPLES:\n  active-listener start  # interactive source pick (TTY)\n  active-listener start --mic --system-audio --dir .\n  active-listener start --mic --dir ~/notes --name standup\n  active-listener start --mic --no-diarize  # skip speaker labels\n  active-listener process recording.wav --dir .\n  active-listener install\n  active-listener uninstall\n  active-listener completions zsh",
+    after_help = "EXAMPLES:\n  active-listener start  # interactive source pick (TTY)\n  active-listener start --mic --system-audio --dir .\n  active-listener start --mic --dir ~/notes --name standup\n  active-listener start --mic --diarize  # speaker labels in markdown\n  active-listener process recording.wav --dir .\n  active-listener install\n  active-listener uninstall\n  active-listener completions zsh",
     subcommand_required = true,
 )]
 struct Cli {
@@ -179,12 +179,12 @@ struct StartArgs {
     #[arg(long, default_value_t = false)]
     cpu: bool,
 
-    /// Skip speaker diarization after recording (on by default when the binary includes the `diarize` feature).
-    #[arg(long = "no-diarize", action = clap::ArgAction::SetTrue)]
-    no_diarize: bool,
+    /// Run speaker diarization in parallel with Whisper (needs a build with the `diarize` feature).
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    diarize: bool,
 
     #[command(flatten)]
-    diarize: DiarizeCliArgs,
+    diarize_args: DiarizeCliArgs,
 }
 
 /// Transcribe an existing WAV from `start` (16 kHz mono PCM16); writes markdown only.
@@ -211,11 +211,12 @@ struct ProcessArgs {
     #[arg(long, default_value_t = false)]
     cpu: bool,
 
-    #[arg(long = "no-diarize", action = clap::ArgAction::SetTrue)]
-    no_diarize: bool,
+    /// Run speaker diarization in parallel with Whisper (needs a build with the `diarize` feature).
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    diarize: bool,
 
     #[command(flatten)]
-    diarize: DiarizeCliArgs,
+    diarize_args: DiarizeCliArgs,
 }
 
 #[derive(Subcommand)]
@@ -477,12 +478,12 @@ fn process_output_path(args: &ProcessArgs) -> PathBuf {
     args.dir.join(format!("{stem}.md"))
 }
 
-fn eprint_num_speakers_notes(no_diarize: bool, num_speakers: Option<u32>) {
+fn eprint_num_speakers_notes(diarize_enabled: bool, num_speakers: Option<u32>) {
     if num_speakers.is_some() {
-        if no_diarize {
+        if !diarize_enabled {
             eprintln!(
                 "{}",
-                style("Note: `--num-speakers` is ignored with `--no-diarize`.")
+                style("Note: `--num-speakers` is ignored without `--diarize`.")
                     .yellow()
             );
         } else if !cfg!(feature = "diarize") {
@@ -504,23 +505,23 @@ struct MeetingFromSamplesOpts {
     whisper_model: WhisperSize,
     verbose: bool,
     cpu: bool,
-    no_diarize: bool,
+    diarize_enabled: bool,
     /// Diarization settings; only consumed when built with `--features diarize`.
     #[cfg_attr(not(feature = "diarize"), allow(dead_code))]
-    diarize: DiarizeParams,
+    diarize_params: DiarizeParams,
     /// Wall time for `start`, or audio length for `process`.
     meeting_duration: Option<Duration>,
 }
 
 fn transcribe_samples_to_markdown(samples: Vec<f32>, opts: MeetingFromSamplesOpts) -> Result<()> {
-    let diarize_wanted = !opts.no_diarize;
+    let diarize_wanted = opts.diarize_enabled;
     let diarize_runs = diarize_wanted && cfg!(feature = "diarize");
 
     if diarize_wanted && !cfg!(feature = "diarize") {
         eprintln!(
             "{}",
             style(
-                "Note: speaker diarization is on by default after recording, but this binary was built without `--features diarize`; rebuild to enable speaker labels.",
+                "Note: you passed `--diarize`, but this binary was built without the `diarize` feature; rebuild with `--features diarize` to enable speaker labels.",
             )
             .yellow()
         );
@@ -539,7 +540,7 @@ fn transcribe_samples_to_markdown(samples: Vec<f32>, opts: MeetingFromSamplesOpt
     #[cfg(feature = "diarize")]
     let diarize_join: Option<DiarizeLabelsJoinHandle> = if diarize_runs {
         let s = Arc::clone(&samples);
-        let cfg = opts.diarize.clone();
+        let cfg = opts.diarize_params.clone();
         let verb = opts.verbose;
         Some(thread::spawn(move || {
             diarize::diarize_samples(&s, &cfg, verb).map(|v| {
@@ -661,9 +662,9 @@ fn run_start(mut cli: StartArgs) -> Result<()> {
         );
     }
 
-    validate_diarize_cli(&cli.diarize)?;
+    validate_diarize_cli(&cli.diarize_args)?;
 
-    eprint_num_speakers_notes(cli.no_diarize, cli.diarize.num_speakers);
+    eprint_num_speakers_notes(cli.diarize, cli.diarize_args.num_speakers);
 
     let stop = Arc::new(AtomicBool::new(false));
     let stop_c = stop.clone();
@@ -738,8 +739,8 @@ fn run_start(mut cli: StartArgs) -> Result<()> {
             whisper_model: cli.whisper_model,
             verbose: cli.verbose,
             cpu: cli.cpu,
-            no_diarize: cli.no_diarize,
-            diarize: diarize_params_from_cli(&cli.diarize),
+            diarize_enabled: cli.diarize,
+            diarize_params: diarize_params_from_cli(&cli.diarize_args),
             meeting_duration: Some(t0.elapsed()),
         },
     )?;
@@ -748,9 +749,9 @@ fn run_start(mut cli: StartArgs) -> Result<()> {
 }
 
 fn run_process(cli: ProcessArgs) -> Result<()> {
-    validate_diarize_cli(&cli.diarize)?;
+    validate_diarize_cli(&cli.diarize_args)?;
 
-    eprint_num_speakers_notes(cli.no_diarize, cli.diarize.num_speakers);
+    eprint_num_speakers_notes(cli.diarize, cli.diarize_args.num_speakers);
 
     let Pcm16kMono { samples } =
         read_wav_16k_mono(&cli.wav).with_context(|| format!("read {}", cli.wav.display()))?;
@@ -770,8 +771,8 @@ fn run_process(cli: ProcessArgs) -> Result<()> {
             whisper_model: cli.whisper_model,
             verbose: cli.verbose,
             cpu: cli.cpu,
-            no_diarize: cli.no_diarize,
-            diarize: diarize_params_from_cli(&cli.diarize),
+            diarize_enabled: cli.diarize,
+            diarize_params: diarize_params_from_cli(&cli.diarize_args),
             meeting_duration: Some(audio_duration),
         },
     )

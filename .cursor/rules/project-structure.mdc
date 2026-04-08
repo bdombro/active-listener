@@ -12,7 +12,7 @@ Modules map 1:1 to concerns -- do not add logic to `main.rs` beyond CLI parsing 
 - `system_audio.rs` -- platform-specific system audio capture backends and capability checks
 - `transcribe.rs` -- all Whisper model loading and inference
 - `markdown.rs`   -- all output formatting
-- `diarize.rs`    -- speaker diarization (sherpa-onnx), gated by the `diarize` Cargo feature (on by default)
+- `diarize.rs`    -- speaker diarization (sherpa-onnx), gated by the `diarize` Cargo feature (on by default); runtime opt-in via `--diarize`
 
 Cross-cutting types (e.g. `TranscriptSegment`, `RecordingConfig`) live in the module that owns them and are `pub` for use in `main.rs`.
 
