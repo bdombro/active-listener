@@ -2,7 +2,7 @@
 name = "active-listener"
 version = "0.1.0"
 edition = "2021"
-description = "Record mic + system audio, transcribe with Whisper (candle), optional local LLM notes"
+description = "Record mic + system audio, transcribe with Whisper (candle)"
 rust-version = "1.74"
 # Embeds Swift stdlib rpaths on macOS so ScreenCaptureKit-linked binaries run from the shell.
 build = "build.rs"

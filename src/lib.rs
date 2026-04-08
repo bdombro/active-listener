@@ -38,7 +38,6 @@ pub mod audio;
 #[cfg(feature = "diarize")]
 pub mod diarize;
 pub mod markdown;
-pub mod summarize;
 pub mod transcribe;
 pub mod whisper;
 pub mod system_audio;

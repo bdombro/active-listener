@@ -1,4 +1,4 @@
-//! Active Listener — record meetings; Whisper transcription and optional local LLM notes after each recording.
+//! Active Listener — record meetings; Whisper transcription after each recording.
 
 use active_listener::audio::{
     list_input_devices, read_wav_16k_mono, record_until_stop, write_wav_16k_mono, Pcm16kMono,
@@ -6,7 +6,6 @@ use active_listener::audio::{
 };
 use active_listener::DiarizeParams;
 use active_listener::markdown::{write_meeting_markdown, MeetingDoc};
-use active_listener::summarize;
 use active_listener::system_audio::system_audio_supported;
 use active_listener::transcribe::{
     delete_all_openai_whisper_hub_caches, ensure_whisper_artifacts, pick_device,
@@ -70,10 +69,10 @@ impl From<WhisperSize> for WhichModel {
 #[command(
     name = "active-listener",
     version,
-    about = "Record meetings; save WAV, then Whisper markdown + optional GGUF LLM.",
-    long_about = "Captures microphone and/or system audio. If you omit `--mic` and `--system-audio`, you are prompted interactively (TTY only; otherwise pass flags explicitly). After each recording, a 16 kHz mono WAV is written, then Whisper runs and markdown is saved (optional GGUF summary via `--llm-model`). Speaker diarization runs in parallel with transcription by default unless you pass `--no-diarize` (requires a build with the `diarize` feature, which is enabled by default).",
+    about = "Record meetings; save WAV, then Whisper markdown.",
+    long_about = "Captures microphone and/or system audio. If you omit `--mic` and `--system-audio`, you are prompted interactively (TTY only; otherwise pass flags explicitly). After each recording, a 16 kHz mono WAV is written, then Whisper runs and markdown is saved. Speaker diarization runs in parallel with transcription by default unless you pass `--no-diarize` (requires a build with the `diarize` feature, which is enabled by default).",
     styles = clap_styles(),
-    after_help = "EXAMPLES:\n  active-listener start  # interactive source pick (TTY)\n  active-listener start --mic --system-audio --dir .\n  active-listener start --mic --dir ~/notes --name standup\n  active-listener start --mic --no-diarize  # skip speaker labels\n  active-listener start --mic --llm-model ~/models/mistral-q4.gguf\n  active-listener process recording.wav --dir .\n  active-listener install\n  active-listener uninstall\n  active-listener completions zsh",
+    after_help = "EXAMPLES:\n  active-listener start  # interactive source pick (TTY)\n  active-listener start --mic --system-audio --dir .\n  active-listener start --mic --dir ~/notes --name standup\n  active-listener start --mic --no-diarize  # skip speaker labels\n  active-listener process recording.wav --dir .\n  active-listener install\n  active-listener uninstall\n  active-listener completions zsh",
     subcommand_required = true,
 )]
 struct Cli {
@@ -140,7 +139,7 @@ fn diarize_params_from_cli(d: &DiarizeCliArgs) -> DiarizeParams {
     }
 }
 
-/// Record until Ctrl+C; writes WAV then Whisper markdown (optional LLM if `--llm-model` is set).
+/// Record until Ctrl+C; writes WAV then Whisper markdown.
 #[derive(Args)]
 struct StartArgs {
     /// Output directory (default: current working directory).
@@ -153,10 +152,6 @@ struct StartArgs {
 
     #[arg(long, value_enum, default_value_t = WhisperSize::Small)]
     whisper_model: WhisperSize,
-
-    /// Path to a GGUF model for summarization (`ACTIVE_LISTENER_LLM_MODEL` if unset).
-    #[arg(long, env = "ACTIVE_LISTENER_LLM_MODEL")]
-    llm_model: Option<PathBuf>,
 
     /// Stop recording after this many seconds.
     #[arg(long)]
@@ -208,10 +203,6 @@ struct ProcessArgs {
 
     #[arg(long, value_enum, default_value_t = WhisperSize::Small)]
     whisper_model: WhisperSize,
-
-    /// Path to a GGUF model for summarization (`ACTIVE_LISTENER_LLM_MODEL` if unset).
-    #[arg(long, env = "ACTIVE_LISTENER_LLM_MODEL")]
-    llm_model: Option<PathBuf>,
 
     #[arg(long, default_value_t = false)]
     verbose: bool,
@@ -506,12 +497,11 @@ fn eprint_num_speakers_notes(no_diarize: bool, num_speakers: Option<u32>) {
     }
 }
 
-/// Whisper + optional diarization + LLM + markdown; used after capture or when loading a WAV.
+/// Whisper + optional diarization + markdown; used after capture or when loading a WAV.
 struct MeetingFromSamplesOpts {
     out_md: PathBuf,
     wav_path_for_success_line: PathBuf,
     whisper_model: WhisperSize,
-    llm_model: Option<PathBuf>,
     verbose: bool,
     cpu: bool,
     no_diarize: bool,
@@ -589,23 +579,6 @@ fn transcribe_samples_to_markdown(samples: Vec<f32>, opts: MeetingFromSamplesOpt
         Vec::new()
     };
 
-    let transcript: String = segments
-        .iter()
-        .map(|s| s.text.as_str())
-        .collect::<Vec<_>>()
-        .join(" ");
-
-    let llm_md = if let Some(ref p) = opts.llm_model {
-        let b = indicatif::ProgressBar::new_spinner();
-        b.set_message("Summarizing with local LLM…");
-        b.enable_steady_tick(Duration::from_millis(100));
-        let r = summarize::summarize_with_gguf(p, &transcript, &device);
-        b.finish_and_clear();
-        Some(r.context("LLM summarize")?)
-    } else {
-        None
-    };
-
     let title = format!(
         "# Meeting notes — {}",
         chrono::Local::now().format("%Y-%m-%d %H:%M")
@@ -614,7 +587,6 @@ fn transcribe_samples_to_markdown(samples: Vec<f32>, opts: MeetingFromSamplesOpt
         title_line: title,
         whisper_model: whisper_label,
         duration: opts.meeting_duration,
-        llm_markdown: llm_md,
         segments,
         speaker_labels,
     };
@@ -764,7 +736,6 @@ fn run_start(mut cli: StartArgs) -> Result<()> {
             out_md,
             wav_path_for_success_line: out_wav,
             whisper_model: cli.whisper_model,
-            llm_model: cli.llm_model,
             verbose: cli.verbose,
             cpu: cli.cpu,
             no_diarize: cli.no_diarize,
@@ -797,7 +768,6 @@ fn run_process(cli: ProcessArgs) -> Result<()> {
             out_md,
             wav_path_for_success_line: cli.wav,
             whisper_model: cli.whisper_model,
-            llm_model: cli.llm_model,
             verbose: cli.verbose,
             cpu: cli.cpu,
             no_diarize: cli.no_diarize,

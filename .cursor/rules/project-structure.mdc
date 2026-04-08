@@ -11,7 +11,6 @@ Modules map 1:1 to concerns -- do not add logic to `main.rs` beyond CLI parsing 
 - `audio.rs`      -- all capture, mixing, resampling logic
 - `system_audio.rs` -- platform-specific system audio capture backends and capability checks
 - `transcribe.rs` -- all Whisper model loading and inference
-- `summarize.rs`  -- all LLM model loading and inference
 - `markdown.rs`   -- all output formatting
 - `diarize.rs`    -- speaker diarization (sherpa-onnx), gated by the `diarize` Cargo feature (on by default)
 

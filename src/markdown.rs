@@ -1,4 +1,4 @@
-//! Write meeting notes markdown (frontmatter + optional LLM body + transcript).
+//! Write meeting notes markdown (frontmatter + transcript).
 
 use crate::transcribe::TranscriptSegment;
 use anyhow::{Context, Result};
@@ -12,7 +12,6 @@ pub struct MeetingDoc {
     pub title_line: String,
     pub whisper_model: String,
     pub duration: Option<Duration>,
-    pub llm_markdown: Option<String>,
     pub segments: Vec<TranscriptSegment>,
     /// `(start_sec, end_sec, speaker_label)` from diarization; empty if not used.
     pub speaker_labels: Vec<(f64, f64, String)>,
@@ -35,13 +34,6 @@ pub fn write_meeting_markdown(path: &Path, doc: &MeetingDoc) -> Result<()> {
     s.push_str("---\n\n");
     s.push_str(&doc.title_line);
     s.push_str("\n\n");
-    if let Some(ref body) = doc.llm_markdown {
-        s.push_str(body.trim());
-        if !body.ends_with('\n') {
-            s.push('\n');
-        }
-        s.push_str("\n\n");
-    }
     s.push_str("## Transcript\n\n");
     let mut prev_speaker: Option<String> = None;
     for seg in &doc.segments {
@@ -256,7 +248,6 @@ mod tests {
             title_line: "# Test".into(),
             whisper_model: "base".into(),
             duration: Some(Duration::from_secs(125)),
-            llm_markdown: None,
             segments: vec![TranscriptSegment {
                 start_sec: 0.0,
                 end_sec: 1.0,
@@ -278,7 +269,6 @@ mod tests {
             title_line: "# Test".into(),
             whisper_model: "base".into(),
             duration: None,
-            llm_markdown: None,
             speaker_labels: vec![
                 (0.0, 5.0, "Speaker 1".into()),
                 (5.0, 10.0, "Speaker 2".into()),
@@ -317,7 +307,6 @@ mod tests {
             title_line: "# Test".into(),
             whisper_model: "base".into(),
             duration: None,
-            llm_markdown: None,
             speaker_labels: vec![
                 (0.0, 2.0, "Speaker 1".into()),
                 (2.0, 10.0, "Speaker 2".into()),

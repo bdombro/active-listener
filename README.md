@@ -1,12 +1,11 @@
 # Active Listener
 
-Record meetings — **fully local**. Each **`start`** session saves a **16 kHz mono WAV**, then runs **Whisper** and writes **markdown** (optional GGUF LLM via [Candle](https://github.com/huggingface/candle)).
+Record meetings — **fully local**. Each **`start`** session saves a **16 kHz mono WAV**, then runs **Whisper** and writes **markdown** (via [Candle](https://github.com/huggingface/candle)).
 
 ## Why it's useful
 
 - **Privacy**: audio and transcripts stay on your machine; no cloud ASR required.
 - **Works with any call app**: choose sources with **`--mic`**, **`--system-audio`**, or both (e.g. `active-listener start --mic --system-audio`). System audio uses **macOS** (ScreenCaptureKit), **Windows** (WASAPI loopback), or **Linux** with **PipeWire** only (no PulseAudio fallback).
-- **Optional summaries**: point at a Llama-compatible **GGUF** with **`--llm-model`**; nothing is downloaded for the LLM.
 
 ## Quick start
 
@@ -41,7 +40,6 @@ active-listener start --mic --system-audio
 active-listener start --mic --dir .
 active-listener start --mic --system-audio --dir ~/notes --name standup
 active-listener start --mic --whisper-model tiny --cpu
-active-listener start --mic --llm-model ~/models/mistral-q4.gguf   # needs tokenizer.json beside the .gguf
 
 # Speaker labels: on by default after recording (default `cargo build` includes diarization)
 ./target/release/active-listener start --mic --no-diarize   # skip labels
@@ -65,16 +63,14 @@ flowchart LR
     Mix --> WAV[WAV file]
     Mix --> Whisper[Whisper Candle]
     Whisper --> Transcript[Transcript]
-    Transcript --> LLM[Optional GGUF LLM]
     Transcript --> MD[Markdown file]
-    LLM --> MD
 ```
 
 **Speaker diarization** (sherpa-onnx, included in default builds) runs after recording on the same 16 kHz samples as Whisper, in parallel with transcription; use **`--no-diarize`** to skip it. Labels are merged into the transcript section of the markdown by overlapping timestamps.
 
 1. **Capture** microphone and, when enabled, system audio (each resampled to 16 kHz mono, summed with soft clipping).
 2. Write that mix as a **WAV** (same basename as the markdown file, `.wav` extension).
-3. **Diarize** by default (opt out with `--no-diarize`) using sherpa-onnx models downloaded once from GitHub (segmentation tarball + NeMo Titanet **large** embedding, on the order of ~100 MB total for the default embedding), running **in parallel** with Whisper on the same audio. **Transcribe** with Whisper (default checkpoint **`small`**; weights from Hugging Face / `hf-hub` on first use), optional **summarize** with GGUF + `tokenizer.json`, then write **markdown** with frontmatter and transcript; speaker headings are merged into the transcript by timestamp overlap.
+3. **Diarize** by default (opt out with `--no-diarize`) using sherpa-onnx models downloaded once from GitHub (segmentation tarball + NeMo Titanet **large** embedding, on the order of ~100 MB total for the default embedding), running **in parallel** with Whisper on the same audio. **Transcribe** with Whisper (default checkpoint **`small`**; weights from Hugging Face / `hf-hub` on first use), then write **markdown** with frontmatter and transcript; speaker headings are merged into the transcript by timestamp overlap.
 
 ## Security & privacy
 
@@ -83,7 +79,6 @@ flowchart LR
 - **Diarization** (default-on after recording unless `--no-diarize`; omit the `diarize` feature when building for a smaller binary): ONNX models are downloaded once from **GitHub** (sherpa-onnx releases) into `~/.cache/active-listener/diarize/`; **no audio** is uploaded. Labels are `Speaker 1`, `Speaker 2`, … (not real names).
 - **`active-listener uninstall`** removes **`~/.local/bin/active-listener`**, matching **`install`** snippets from **`~/.zshrc`**, and every **`openai/whisper-*`** directory under your Hugging Face hub cache.
 - **`active-listener install`** caches the chosen Whisper model (default **`small`**) and, with default features, sherpa-onnx diarization models under **`~/.cache/active-listener/diarize/`**.
-- **LLM**: only reads files you pass; runs in-process. Place `tokenizer.json` next to your `.gguf` (e.g. copy from the model repo or LM Studio export).
 - Output **`.wav`** and **`.md`** contain raw audio / full transcript — protect them like any sensitive file.
 - **Microphone** permission is required by macOS when recording.
 - **Screen Recording** permission is required on macOS for system audio (System Settings → Privacy & Security).
@@ -105,7 +100,7 @@ For difficult audio (TV in the room, heavy reverb, single mixed channel), expect
 
 Run `active-listener --help` for subcommands, or `active-listener start --help` for recording flags (colors, examples).
 
-Notable `start` / `process` flags: **`--mic`**, **`--system-audio`** (at least one required for `start`), **`--no-diarize`**, diarization group (**`--num-speakers`**, **`--diarize-threshold`**, **`--diarize-min-duration-on`**, **`--diarize-min-duration-off`**, **`--diarize-embedding`** / **`ACTIVE_LISTENER_DIARIZE_EMBEDDING`**), `--dir`, `--name`, `--whisper-model` (default **`small`**), `--llm-model` / `ACTIVE_LISTENER_LLM_MODEL`, `--duration`, `--device` (mic only), `--list-devices`, `--verbose`, `--cpu`.
+Notable `start` / `process` flags: **`--mic`**, **`--system-audio`** (at least one required for `start`), **`--no-diarize`**, diarization group (**`--num-speakers`**, **`--diarize-threshold`**, **`--diarize-min-duration-on`**, **`--diarize-min-duration-off`**, **`--diarize-embedding`** / **`ACTIVE_LISTENER_DIARIZE_EMBEDDING`**), `--dir`, `--name`, `--whisper-model` (default **`small`**), `--duration`, `--device` (mic only), `--list-devices`, `--verbose`, `--cpu`.
 
 ## Development
 
