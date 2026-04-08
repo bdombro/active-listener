@@ -14,12 +14,18 @@ TARGETS=(
   "aarch64-apple-darwin"
   "x86_64-apple-darwin"
   "x86_64-unknown-linux-gnu"
+  "x86_64-pc-windows-gnu"
 )
 
 ARTIFACTS=()
 for TARGET in "${TARGETS[@]}"; do
   TARBALL="active-listener-${VERSION}-${TARGET}.tar.gz"
-  tar -czf "${TARBALL}" -C "target/${TARGET}/release" active-listener
+  if [[ "${TARGET}" == *-pc-windows-* ]]; then
+    BINARY=active-listener.exe
+  else
+    BINARY=active-listener
+  fi
+  tar -czf "${TARBALL}" -C "target/${TARGET}/release" "${BINARY}"
   ARTIFACTS+=("${TARBALL}")
   echo "Packaged: ${TARBALL}"
 done

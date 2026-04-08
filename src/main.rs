@@ -8,7 +8,7 @@ mod whisper;
 
 use anstyle::{AnsiColor, Color, Style};
 use anyhow::{Context, Result};
-use clap::{builder::Styles, CommandFactory, Parser, Subcommand, ValueEnum};
+use clap::{builder::Styles, Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{generate, Shell};
 use console::style;
 use std::io;
@@ -72,12 +72,17 @@ impl From<WhisperSize> for WhichModel {
     about = "Record meetings, get markdown notes (local Whisper + optional GGUF LLM).",
     long_about = "Captures microphone audio, transcribes with OpenAI Whisper via Candle, and optionally summarizes with a local Llama-compatible GGUF you provide.",
     styles = clap_styles(),
-    after_help = "EXAMPLES:\n  active-listener\n  active-listener --dir ~/notes --name standup\n  active-listener --llm-model ~/models/mistral-q4.gguf\n  active-listener completions zsh",
+    after_help = "EXAMPLES:\n  active-listener start --dir .\n  active-listener start --dir ~/notes --name standup\n  active-listener install\n  active-listener start --llm-model ~/models/mistral-q4.gguf\n  active-listener completions zsh",
+    subcommand_required = true,
 )]
 struct Cli {
     #[command(subcommand)]
-    command: Option<Commands>,
+    command: Commands,
+}
 
+/// Record until Ctrl+C, transcribe with Whisper, optionally summarize, write markdown.
+#[derive(Args)]
+struct StartArgs {
     #[arg(long, value_enum, default_value_t = Mode::Batch)]
     mode: Mode,
 
@@ -123,13 +128,19 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Record audio until Ctrl+C, transcribe, write markdown.
+    Start(StartArgs),
     /// Print shell completion script (zsh, bash, or fish).
     Completions {
         #[arg(value_enum)]
         shell: ShellArg,
     },
-    /// Install the binary to ~/.local/bin and configure zsh shell integration.
-    Install,
+    /// Install the binary to ~/.local/bin, configure zsh, and pre-download Whisper weights.
+    Install {
+        /// Whisper checkpoint to cache from Hugging Face (same as `start --whisper-model`).
+        #[arg(long, value_enum, default_value_t = WhisperSize::Medium)]
+        whisper_model: WhisperSize,
+    },
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -139,7 +150,7 @@ enum ShellArg {
     Fish,
 }
 
-fn cmd_install() -> Result<()> {
+fn cmd_install(whisper_model: WhisperSize) -> Result<()> {
     use std::io::Write;
 
     let exe = std::env::current_exe().context("could not determine current executable path")?;
@@ -203,6 +214,13 @@ fn cmd_install() -> Result<()> {
         println!("Completions already configured.");
     }
 
+    let which: WhichModel = whisper_model.into();
+    println!(
+        "\nPre-downloading Whisper weights ({whisper_model:?}) from Hugging Face…"
+    );
+    transcribe::ensure_whisper_artifacts(which).context("download Whisper model")?;
+    println!("Whisper model cached.");
+
     println!("\nDone. Run: source ~/.zshrc");
     Ok(())
 }
@@ -211,33 +229,39 @@ fn home_dir() -> Option<std::path::PathBuf> {
     std::env::var_os("HOME").map(std::path::PathBuf::from)
 }
 
-fn output_path(cli: &Cli) -> PathBuf {
-    let stem = cli
+fn output_path(args: &StartArgs) -> PathBuf {
+    let stem = args
         .name
         .clone()
         .unwrap_or_else(|| chrono::Local::now().format("%Y-%m-%d_%H%M%S").to_string());
-    cli.dir.join(format!("{stem}.md"))
+    args.dir.join(format!("{stem}.md"))
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    if let Some(Commands::Completions { shell }) = cli.command {
-        let mut cmd = Cli::command();
-        let sh: Shell = match shell {
-            ShellArg::Zsh => Shell::Zsh,
-            ShellArg::Bash => Shell::Bash,
-            ShellArg::Fish => Shell::Fish,
-        };
-        generate(sh, &mut cmd, "active-listener", &mut io::stdout());
-        return Ok(());
+    match cli.command {
+        Commands::Completions { shell } => {
+            let mut cmd = Cli::command();
+            let sh: Shell = match shell {
+                ShellArg::Zsh => Shell::Zsh,
+                ShellArg::Bash => Shell::Bash,
+                ShellArg::Fish => Shell::Fish,
+            };
+            generate(sh, &mut cmd, "active-listener", &mut io::stdout());
+        }
+        Commands::Install { whisper_model } => {
+            cmd_install(whisper_model)?;
+        }
+        Commands::Start(args) => {
+            run_start(args)?;
+        }
     }
 
-    if let Some(Commands::Install) = cli.command {
-        cmd_install()?;
-        return Ok(());
-    }
+    Ok(())
+}
 
+fn run_start(cli: StartArgs) -> Result<()> {
     if cli.list_devices {
         for n in list_input_devices()? {
             println!("{n}");

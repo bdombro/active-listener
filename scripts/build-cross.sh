@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Build release binaries for aarch64-apple-darwin, x86_64-apple-darwin, and x86_64-unknown-linux-gnu.
-# See justfile (`just build-cross`).
+# Build release binaries for aarch64-apple-darwin, x86_64-apple-darwin, x86_64-unknown-linux-gnu,
+# and x86_64-pc-windows-gnu (CPU-only for non-macOS targets; see just build-cross).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -80,7 +80,16 @@ build_linux() {
   echo "Done: target/x86_64-unknown-linux-gnu/release/active-listener"
 }
 
+build_windows() {
+  ensure_cargo_path
+  rustup target add x86_64-pc-windows-gnu
+  echo "Building x86_64-pc-windows-gnu..."
+  cross build --release --target x86_64-pc-windows-gnu --no-default-features
+  echo "Done: target/x86_64-pc-windows-gnu/release/active-listener.exe"
+}
+
 precheck
 build_macos_aarch64
 build_macos_x86_64
 build_linux
+build_windows

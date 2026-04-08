@@ -1,4 +1,4 @@
-# Used by `cross` for Linux targets from macOS/Windows hosts.
+# Used by `cross` for non-macOS targets from macOS/Linux hosts.
 # https://github.com/cross-rs/cross
 
 [target.x86_64-unknown-linux-gnu]

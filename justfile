@@ -9,7 +9,7 @@ _:
 build:
     cargo build --release
 
-# aarch64 + x86_64 macOS (Metal) and x86_64 Linux (CPU via cross). Needs Docker; see scripts/build-cross.sh.
+# macOS aarch64/x86_64 (Metal), Linux x86_64, Windows x86_64 GNU (CPU via cross for non-macOS). Needs Docker; see scripts/build-cross.sh.
 build-cross:
     ./scripts/build-cross.sh
 

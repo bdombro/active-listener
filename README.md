@@ -21,17 +21,18 @@ cargo build --release
 ./target/release/active-listener install
 ```
 
-After install, the binary is in `~/.local/bin` and zsh completions are configured. Run `source ~/.zshrc` once.
+After install, the binary is in `~/.local/bin`, zsh completions are configured, and the default Whisper weights are downloaded from Hugging Face (use `active-listener install --whisper-model tiny` etc. to pick another size). Run `source ~/.zshrc` once.
 
 ## Basic usage
 
 ```bash
-# Record until Ctrl+C; writes ./YYYY-MM-DD_HHMMSS.md
-active-listener
+# Record until Ctrl+C; writes ./YYYY-MM-DD_HHMMSS.md (defaults: current directory, medium Whisper)
+active-listener start
 
-active-listener --dir ~/notes --name standup
-active-listener --whisper-model tiny --cpu
-active-listener --llm-model ~/models/mistral-q4.gguf   # needs tokenizer.json beside the .gguf
+active-listener start --dir .
+active-listener start --dir ~/notes --name standup
+active-listener start --whisper-model tiny --cpu
+active-listener start --llm-model ~/models/mistral-q4.gguf   # needs tokenizer.json beside the .gguf
 ```
 
 Shell completions:
@@ -68,9 +69,9 @@ flowchart LR
 
 ## CLI options
 
-Run `active-listener --help` for the full, styled help (colors, examples, flags).
+Run `active-listener --help` for subcommands, or `active-listener start --help` for recording flags (colors, examples).
 
-Notable flags: `--dir`, `--name`, `--whisper-model`, `--llm-model` / `ACTIVE_LISTENER_LLM_MODEL`, `--duration`, `--device`, `--list-devices`, `--verbose`, `--cpu`, `--mode batch|realtime` (realtime currently records then transcribes; live chunk decode is not implemented yet).
+Notable `start` flags: `--dir`, `--name`, `--whisper-model`, `--llm-model` / `ACTIVE_LISTENER_LLM_MODEL`, `--duration`, `--device`, `--list-devices`, `--verbose`, `--cpu`, `--mode batch|realtime` (realtime currently records then transcribes; live chunk decode is not implemented yet).
 
 ## Development
 
@@ -79,11 +80,11 @@ Requires [just](https://github.com/casey/just) (`brew install just`) and Rust 1.
 ```bash
 just build        # cargo build --release (native host)
 just install      # build + active-listener install (copies binary, configures shell)
-just build-cross  # all release targets: aarch64 + x86_64 macOS (Metal), Linux x86_64 (CPU); needs Docker
+just build-cross  # macOS aarch64/x86_64 (Metal), Linux x86_64, Windows x86_64 GNU (CPU for non-macOS); needs Docker
 just release      # build-cross + GitHub release (needs `gh`)
 ```
 
-`just build-cross` requires [Docker](https://docs.docker.com/get-docker/) running and may install `cross` from git on first use (see [`scripts/build-cross.sh`](scripts/build-cross.sh)). For native development only, use `just build`.
+`just build-cross` requires [Docker](https://docs.docker.com/get-docker/) running and may install `cross` from git on first use (see [`scripts/build-cross.sh`](scripts/build-cross.sh)). For native development only, use `just build`. To try recording from a dev build: `cargo run -- start` or `cargo run -- start --dir .`.
 
 If you see `rustup: command not found`, ensure `~/.cargo/bin` is on your PATH (`scripts/build-cross.sh` prepends it; use a normal user `HOME`).
 
