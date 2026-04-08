@@ -25,3 +25,7 @@ install: build
 # Create a GitHub release with cross-compiled binary tarballs (requires gh)
 release: build-cross
     ./scripts/release.sh
+
+# Smoke test the release binary with a sample WAV file
+smoke-test:
+    ./target/release/active-listener process ./tests/2026-04-08_165818.wav --dir .

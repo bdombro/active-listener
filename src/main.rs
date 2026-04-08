@@ -108,7 +108,7 @@ struct DiarizeCliArgs {
     )]
     min_duration_off: f32,
 
-    /// Speaker embedding ONNX (16 kHz). Default: auto-download NeMo Titanet large. Override with another sherpa-onnx release model if needed (see README).
+    /// Speaker embedding ONNX (16 kHz). Default: auto-download NeMo Titanet small. Override with another sherpa-onnx release model if needed (see README).
     #[arg(long = "diarize-embedding", env = "ACTIVE_LISTENER_DIARIZE_EMBEDDING")]
     embedding_model: Option<PathBuf>,
 }
@@ -320,7 +320,7 @@ fn cmd_install(whisper_model: WhisperSize) -> Result<()> {
     #[cfg(feature = "diarize")]
     {
         println!(
-            "\nDownloading speaker diarization models (sherpa-onnx: segmentation + NeMo Titanet large)…"
+            "\nDownloading speaker diarization models (sherpa-onnx: segmentation + NeMo Titanet small)…"
         );
         active_listener::diarize::ensure_diarize_models(
             true,

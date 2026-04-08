@@ -23,9 +23,9 @@ pub struct DiarizeSegment {
 const SEGMENTATION_TAR_URL: &str = "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2";
 
 /// Upstream release tag uses this spelling (`speaker-recongition-models`).
-const EMBEDDING_FILENAME: &str = "nemo_en_titanet_large.onnx";
+const EMBEDDING_FILENAME: &str = "nemo_en_titanet_small.onnx";
 const EMBEDDING_URL: &str =
-    "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/nemo_en_titanet_large.onnx";
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/nemo_en_titanet_small.onnx";
 
 const EXPECTED_SAMPLE_RATE: i32 = 16_000;
 
@@ -42,7 +42,7 @@ fn diarize_cache_dir() -> Result<PathBuf> {
     )
 }
 
-/// Download segmentation model if needed; resolve embedding ONNX path (downloaded NeMo Titanet large or `params.embedding_model`).
+/// Download segmentation model if needed; resolve embedding ONNX path (downloaded NeMo Titanet small or `params.embedding_model`).
 /// Returns `(pyannote_segmentation_onnx, speaker_embedding_onnx)`.
 pub fn ensure_diarize_models(verbose: bool, params: &DiarizeParams) -> Result<(PathBuf, PathBuf)> {
     let base = diarize_cache_dir()?;
@@ -86,7 +86,7 @@ pub fn ensure_diarize_models(verbose: bool, params: &DiarizeParams) -> Result<(P
         let emb = base.join(EMBEDDING_FILENAME);
         if !emb.is_file() {
             if verbose {
-                eprintln!("Downloading speaker embedding model (NeMo Titanet large)…");
+                eprintln!("Downloading speaker embedding model (NeMo Titanet small)…");
             }
             download_file(EMBEDDING_URL, &emb).with_context(|| {
                 format!(

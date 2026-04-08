@@ -20,7 +20,7 @@ cargo build --release
 ./target/release/active-listener install
 ```
 
-After install, the binary is in `~/.local/bin`, zsh completions are configured, and the default Whisper weights (**`small`**) are downloaded from Hugging Face (use `active-listener install --whisper-model tiny` etc. to pick another size). When built with **`diarize`** (the default), **`install`** also downloads sherpa-onnx diarization assets (pyannote segmentation + **NeMo Titanet large** embedding) into `~/.cache/active-listener/diarize/`, so the first recording does not wait on those. Run `source ~/.zshrc` once.
+After install, the binary is in `~/.local/bin`, zsh completions are configured, and the default Whisper weights (**`small`**) are downloaded from Hugging Face (use `active-listener install --whisper-model tiny` etc. to pick another size). When built with **`diarize`** (the default), **`install`** also downloads sherpa-onnx diarization assets (pyannote segmentation + **NeMo Titanet small** embedding) into `~/.cache/active-listener/diarize/`, so the first recording does not wait on those. Run `source ~/.zshrc` once.
 
 To remove the installed binary, the install-time `~/.zshrc` snippets, and **all** cached `openai/whisper-*` Hugging Face hub folders:
 
@@ -70,7 +70,7 @@ flowchart LR
 
 1. **Capture** microphone and, when enabled, system audio (each resampled to 16 kHz mono, summed with soft clipping).
 2. Write that mix as a **WAV** (same basename as the markdown file, `.wav` extension).
-3. **Diarize** by default (opt out with `--no-diarize`) using sherpa-onnx models downloaded once from GitHub (segmentation tarball + NeMo Titanet **large** embedding, on the order of ~100 MB total for the default embedding), running **in parallel** with Whisper on the same audio. **Transcribe** with Whisper (default checkpoint **`small`**; weights from Hugging Face / `hf-hub` on first use), then write **markdown** with frontmatter and transcript; speaker headings are merged into the transcript by timestamp overlap.
+3. **Diarize** by default (opt out with `--no-diarize`) using sherpa-onnx models downloaded once from GitHub (segmentation tarball + NeMo Titanet **small** embedding), running **in parallel** with Whisper on the same audio. **Transcribe** with Whisper (default checkpoint **`small`**; weights from Hugging Face / `hf-hub` on first use), then write **markdown** with frontmatter and transcript; speaker headings are merged into the transcript by timestamp overlap.
 
 ## Security & privacy
 
@@ -92,7 +92,7 @@ Offline diarization is **inherently fuzzy**: a single scalar threshold cannot se
 1. **`--num-speakers N`** when you know the count (e.g. two-person call). This fixes the cluster size and usually behaves better than threshold-only mode.
 2. **`--diarize-threshold`** — coarse merge/split knob when `--num-speakers` is **not** set (higher → fewer speakers).
 3. **`--diarize-min-duration-on`** / **`--diarize-min-duration-off`** — sherpa-onnx segment cleanup (defaults `0.3` / `0.5` seconds). Slightly **higher** `min-duration-off` can smooth rapid speaker flips; **higher** `min-duration-on` drops very short regions (can remove noise or clip short words if pushed too far).
-4. **`--diarize-embedding`** (or env **`ACTIVE_LISTENER_DIARIZE_EMBEDDING`**) — path to a different 16 kHz speaker embedding ONNX. Default is NeMo **Titanet large** (auto-downloaded). Other models from [sherpa-onnx speaker-recongition-models](https://github.com/k2-fsa/sherpa-onnx/releases/tag/speaker-recongition-models) work via this flag if you want to experiment.
+4. **`--diarize-embedding`** (or env **`ACTIVE_LISTENER_DIARIZE_EMBEDDING`**) — path to a different 16 kHz speaker embedding ONNX. Default is NeMo **Titanet small** (auto-downloaded). Other models from [sherpa-onnx speaker-recongition-models](https://github.com/k2-fsa/sherpa-onnx/releases/tag/speaker-recongition-models) work via this flag if you want to experiment (e.g. **Titanet large** for higher quality at the cost of size and speed).
 
 For difficult audio (TV in the room, heavy reverb, single mixed channel), expect imperfect labels; there is no second-stage “smart” relabeling in this app today.
 
