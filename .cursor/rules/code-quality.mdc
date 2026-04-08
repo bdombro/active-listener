@@ -1,0 +1,13 @@
+---
+description: Rust code quality standards
+alwaysApply: true
+---
+
+# Rust Code Quality
+
+- Use `anyhow::Result` for fallible functions; never `.unwrap()` or `.expect()` in non-test code
+- Add context to propagated errors with `.with_context(|| "...")`
+- No `#[allow(dead_code)]` or `#[allow(unused)]` suppressions without a comment explaining why
+- For audio callback paths, use lock-free structures (`ringbuf`) -- never hold a mutex in a real-time audio callback
+- No commented-out code committed; use `todo!()` or `unimplemented!()` with a tracking comment
+- No `clone()` in hot paths (audio processing loop); prefer references or channel messaging

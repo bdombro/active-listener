@@ -1,0 +1,10 @@
+/target/
+**/*.rs.bk
+.DS_Store
+
+# Local LLM / Whisper weights
+*.gguf
+*.gguf.*
+models/
+hf-cache/
+.huggingface/

@@ -1,0 +1,8 @@
+# Used by `cross` for Linux targets from macOS/Windows hosts.
+# https://github.com/cross-rs/cross
+
+[target.x86_64-unknown-linux-gnu]
+# libasound2: cpal; libssl-dev: openssl-sys (native-tls / reqwest / hf-hub)
+pre-build = [
+    "apt-get update && apt-get install --yes --no-install-recommends libasound2-dev libssl-dev pkg-config",
+]

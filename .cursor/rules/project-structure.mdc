@@ -1,0 +1,19 @@
+---
+description: Project layout and module conventions
+alwaysApply: true
+---
+
+# Project Structure
+
+Modules map 1:1 to concerns -- do not add logic to `main.rs` beyond CLI parsing and top-level orchestration:
+
+- `audio.rs`      -- all capture, mixing, resampling logic
+- `transcribe.rs` -- all Whisper model loading and inference
+- `summarize.rs`  -- all LLM model loading and inference
+- `markdown.rs`   -- all output formatting
+
+Cross-cutting types (e.g. `TranscriptSegment`, `RecordingConfig`) live in the module that owns them and are `pub` for use in `main.rs`.
+
+- `scripts/install.sh` -- installation only; no build logic beyond `cargo build --release`
+- Keep `Cargo.toml` features explicit; enable `metal` via a `[features]` block, not a hard dependency
+- New external crates require a comment in `Cargo.toml` explaining what they're used for

@@ -1,0 +1,44 @@
+[package]
+name = "active-listener"
+version = "0.1.0"
+edition = "2021"
+description = "Record mic + system audio, transcribe with Whisper (candle), optional local LLM notes"
+rust-version = "1.74"
+
+[features]
+default = ["metal"]
+# Apple Silicon GPU for candle (optional; build with --no-default-features on non-macOS)
+metal = [
+    "candle-core/metal",
+    "candle-nn/metal",
+    "candle-transformers/metal",
+]
+
+[dependencies]
+# ML / Whisper
+candle-core = "0.10.2"
+candle-nn = "0.10.2"
+candle-transformers = "0.10.2"
+byteorder = "1.5"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rand = "0.9"
+tokenizers = { version = "0.21", features = ["onig"] }
+
+# Hugging Face: download Whisper weights only
+hf-hub = "0.4"
+
+# Audio
+cpal = "0.15"
+# CLI
+clap = { version = "4", features = ["derive", "color", "help", "usage", "suggestions", "env"] }
+anstyle = "1"
+clap_complete = "4"
+indicatif = "0.17"
+console = "0.15"
+crossbeam-channel = "0.5"
+
+# Utils
+anyhow = "1"
+chrono = "0.4"
+ctrlc = "3"

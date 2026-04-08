@@ -1,0 +1,12 @@
+---
+description: Test conventions for this project
+alwaysApply: true
+---
+
+# Test Coverage
+
+- Unit tests live in a `#[cfg(test)] mod tests` block at the bottom of each source file
+- Integration tests live in `tests/` and cover end-to-end flows (e.g. pcm -> transcript, transcript -> markdown)
+- Audio/model tests that require hardware use `#[ignore]` so `cargo test` passes in CI without devices
+- Test names describe behavior: `transcribes_silence_as_empty`, not `test1`
+- Use `insta` or inline snapshots for markdown output tests
