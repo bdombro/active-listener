@@ -1,7 +1,8 @@
 //! Download OpenAI Whisper weights (safetensors) and run inference via the vendored `whisper` module.
 
 use anyhow::{Context, Result};
-use hf_hub::{api::sync::Api, Repo, RepoType};
+use hf_hub::{api::sync::Api, Cache, Repo, RepoType};
+use std::fs;
 use std::path::PathBuf;
 
 pub use crate::whisper::{TranscriptSegment, WhichModel};
@@ -49,6 +50,38 @@ pub fn ensure_whisper_artifacts(which: WhichModel) -> Result<(PathBuf, PathBuf, 
     Ok((config, tokenizer, weights))
 }
 
+/// Hugging Face hub folder prefix for all `openai/whisper-*` model repos (see `hf_hub::Repo::folder_name`).
+const OPENAI_WHISPER_HUB_DIR_PREFIX: &str = "models--openai--whisper-";
+
+/// Remove every `models--openai--whisper-*` directory under the Hugging Face hub cache.
+/// Returns how many directories were removed.
+pub fn delete_all_openai_whisper_hub_caches() -> Result<usize> {
+    let cache = Cache::from_env();
+    let hub = cache.path();
+    if !hub.is_dir() {
+        return Ok(0);
+    }
+    let mut removed = 0usize;
+    for entry in fs::read_dir(hub).with_context(|| format!("read_dir {}", hub.display()))? {
+        let entry = entry.with_context(|| format!("read_dir entry under {}", hub.display()))?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let name = entry.file_name();
+        if !name
+            .to_string_lossy()
+            .starts_with(OPENAI_WHISPER_HUB_DIR_PREFIX)
+        {
+            continue;
+        }
+        fs::remove_dir_all(&path)
+            .with_context(|| format!("remove Whisper hub cache at {}", path.display()))?;
+        removed += 1;
+    }
+    Ok(removed)
+}
+
 /// Full path: load weights, build mel, decode.
 pub fn transcribe_pcm_samples(
     pcm_16k_mono: &[f32],
@@ -67,10 +100,36 @@ pub fn transcribe_pcm_samples(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hf_hub::{Repo, RepoType};
 
     #[test]
     fn which_base_revision() {
         let (id, _) = hf_whisper_repo(WhichModel::Base);
         assert!(id.contains("whisper"));
+    }
+
+    #[test]
+    fn whisper_medium_hub_folder_name_matches_hf_layout() {
+        let repo = Repo::new("openai/whisper-medium".to_string(), RepoType::Model);
+        assert_eq!(repo.folder_name(), "models--openai--whisper-medium");
+    }
+
+    #[test]
+    fn all_whisper_sizes_use_openai_whisper_hub_prefix() {
+        for which in [
+            WhichModel::Tiny,
+            WhichModel::Base,
+            WhichModel::Small,
+            WhichModel::Medium,
+            WhichModel::Large,
+        ] {
+            let (id, _) = hf_whisper_repo(which);
+            let repo = Repo::new(id, RepoType::Model);
+            assert!(
+                repo.folder_name().starts_with(OPENAI_WHISPER_HUB_DIR_PREFIX),
+                "{}",
+                repo.folder_name()
+            );
+        }
     }
 }

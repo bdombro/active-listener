@@ -1,26 +1,33 @@
-//! Active Listener — record meetings, transcribe with Whisper, optional local LLM notes.
+//! Active Listener — record meetings; Whisper transcription and optional local LLM notes after each recording.
 
-mod audio;
-mod markdown;
-mod summarize;
-mod transcribe;
-mod whisper;
+use active_listener::audio::{
+    list_input_devices, read_wav_16k_mono, record_until_stop, write_wav_16k_mono, Pcm16kMono,
+    WHISPER_SAMPLE_RATE,
+};
+use active_listener::DiarizeParams;
+use active_listener::markdown::{write_meeting_markdown, MeetingDoc};
+use active_listener::summarize;
+use active_listener::system_audio::system_audio_supported;
+use active_listener::transcribe::{
+    delete_all_openai_whisper_hub_caches, ensure_whisper_artifacts, pick_device,
+    transcribe_pcm_samples, WhichModel,
+};
+#[cfg(feature = "diarize")]
+use active_listener::diarize;
 
 use anstyle::{AnsiColor, Color, Style};
 use anyhow::{Context, Result};
 use clap::{builder::Styles, Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{generate, Shell};
 use console::style;
-use std::io;
+use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use audio::{list_input_devices, record_until_stop, system_audio_supported};
-use markdown::{write_meeting_markdown, MeetingDoc};
-use transcribe::{pick_device, transcribe_pcm_samples, WhichModel};
+type DiarizeLabelsJoinHandle = thread::JoinHandle<anyhow::Result<Vec<(f64, f64, String)>>>;
 
 fn clap_styles() -> Styles {
     Styles::styled()
@@ -36,12 +43,6 @@ fn clap_styles() -> Styles {
         )
         .literal(Style::new().fg_color(Some(Color::Ansi(AnsiColor::Green))))
         .placeholder(Style::new().fg_color(Some(Color::Ansi(AnsiColor::Cyan))))
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
-enum Mode {
-    Batch,
-    Realtime,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -69,10 +70,10 @@ impl From<WhisperSize> for WhichModel {
 #[command(
     name = "active-listener",
     version,
-    about = "Record meetings, get markdown notes (local Whisper + optional GGUF LLM).",
-    long_about = "Captures microphone audio, transcribes with OpenAI Whisper via Candle, and optionally summarizes with a local Llama-compatible GGUF you provide.",
+    about = "Record meetings; save WAV, then Whisper markdown + optional GGUF LLM.",
+    long_about = "Captures microphone and/or system audio. If you omit `--mic` and `--system-audio`, you are prompted interactively (TTY only; otherwise pass flags explicitly). After each recording, a 16 kHz mono WAV is written, then Whisper runs and markdown is saved (optional GGUF summary via `--llm-model`). Speaker diarization runs in parallel with transcription by default unless you pass `--no-diarize` (requires a build with the `diarize` feature, which is enabled by default).",
     styles = clap_styles(),
-    after_help = "EXAMPLES:\n  active-listener start --dir .\n  active-listener start --dir ~/notes --name standup\n  active-listener install\n  active-listener start --llm-model ~/models/mistral-q4.gguf\n  active-listener completions zsh",
+    after_help = "EXAMPLES:\n  active-listener start  # interactive source pick (TTY)\n  active-listener start --mic --system-audio --dir .\n  active-listener start --mic --dir ~/notes --name standup\n  active-listener start --mic --no-diarize  # skip speaker labels\n  active-listener start --mic --llm-model ~/models/mistral-q4.gguf\n  active-listener process recording.wav --dir .\n  active-listener install\n  active-listener uninstall\n  active-listener completions zsh",
     subcommand_required = true,
 )]
 struct Cli {
@@ -80,12 +81,68 @@ struct Cli {
     command: Commands,
 }
 
-/// Record until Ctrl+C, transcribe with Whisper, optionally summarize, write markdown.
+#[derive(Clone, Debug, Args)]
+#[command(next_help_heading = "Diarization (sherpa-onnx)")]
+struct DiarizeCliArgs {
+    /// Expected speaker count when you know it (e.g. `2` for a two-person call). Uses fixed clustering instead of threshold heuristics—often the most stable option.
+    #[arg(long)]
+    num_speakers: Option<u32>,
+
+    /// When speaker count is unknown: **lower** → more clusters, **higher** → fewer (see sherpa-onnx clustering docs). Ignored if `--num-speakers` is set.
+    #[arg(
+        long = "diarize-threshold",
+        default_value_t = active_listener::DEFAULT_DIARIZE_CLUSTER_THRESHOLD
+    )]
+    cluster_threshold: f32,
+
+    /// Drop speech shorter than this many seconds before clustering. Slightly **higher** can remove spurious splits; too high clips short words.
+    #[arg(
+        long = "diarize-min-duration-on",
+        default_value_t = active_listener::DEFAULT_DIARIZE_MIN_DURATION_ON
+    )]
+    min_duration_on: f32,
+
+    /// Merge same-speaker regions when separated by gaps shorter than this many seconds. **Higher** reduces rapid speaker alternation in the output.
+    #[arg(
+        long = "diarize-min-duration-off",
+        default_value_t = active_listener::DEFAULT_DIARIZE_MIN_DURATION_OFF
+    )]
+    min_duration_off: f32,
+
+    /// Speaker embedding ONNX (16 kHz). Default: auto-download NeMo Titanet large. Override with another sherpa-onnx release model if needed (see README).
+    #[arg(long = "diarize-embedding", env = "ACTIVE_LISTENER_DIARIZE_EMBEDDING")]
+    embedding_model: Option<PathBuf>,
+}
+
+fn validate_diarize_cli(d: &DiarizeCliArgs) -> Result<()> {
+    let thr = d.cluster_threshold;
+    if !(0.01..=0.99).contains(&thr) {
+        anyhow::bail!("--diarize-threshold must be between 0.01 and 0.99 (got {thr})");
+    }
+    let on = d.min_duration_on;
+    if !(0.0..=5.0).contains(&on) {
+        anyhow::bail!("--diarize-min-duration-on must be between 0 and 5 seconds (got {on})");
+    }
+    let off = d.min_duration_off;
+    if !(0.0..=10.0).contains(&off) {
+        anyhow::bail!("--diarize-min-duration-off must be between 0 and 10 seconds (got {off})");
+    }
+    Ok(())
+}
+
+fn diarize_params_from_cli(d: &DiarizeCliArgs) -> DiarizeParams {
+    DiarizeParams {
+        num_speakers: d.num_speakers,
+        cluster_threshold: d.cluster_threshold,
+        min_duration_on: d.min_duration_on,
+        min_duration_off: d.min_duration_off,
+        embedding_model: d.embedding_model.clone(),
+    }
+}
+
+/// Record until Ctrl+C; writes WAV then Whisper markdown (optional LLM if `--llm-model` is set).
 #[derive(Args)]
 struct StartArgs {
-    #[arg(long, value_enum, default_value_t = Mode::Batch)]
-    mode: Mode,
-
     /// Output directory (default: current working directory).
     #[arg(long, default_value = ".")]
     dir: PathBuf,
@@ -94,7 +151,7 @@ struct StartArgs {
     #[arg(long)]
     name: Option<String>,
 
-    #[arg(long, value_enum, default_value_t = WhisperSize::Medium)]
+    #[arg(long, value_enum, default_value_t = WhisperSize::Small)]
     whisper_model: WhisperSize,
 
     /// Path to a GGUF model for summarization (`ACTIVE_LISTENER_LLM_MODEL` if unset).
@@ -105,16 +162,18 @@ struct StartArgs {
     #[arg(long)]
     duration: Option<u64>,
 
-    #[arg(long, default_value_t = false)]
-    no_system_audio: bool,
+    /// Capture microphone input (combine with `--system-audio` for both).
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    mic: bool,
 
-    #[arg(long, default_value_t = false)]
-    no_mic: bool,
+    /// Mix in system/desktop audio when supported (requires Screen Recording on macOS, etc.).
+    #[arg(long = "system-audio", action = clap::ArgAction::SetTrue)]
+    system_audio: bool,
 
     #[arg(long, default_value_t = false)]
     list_devices: bool,
 
-    /// Microphone device name (see --list-devices).
+    /// Microphone device name (see `--list-devices`; only used with `--mic`).
     #[arg(long)]
     device: Option<String>,
 
@@ -124,23 +183,69 @@ struct StartArgs {
     /// Force CPU (no Metal).
     #[arg(long, default_value_t = false)]
     cpu: bool,
+
+    /// Skip speaker diarization after recording (on by default when the binary includes the `diarize` feature).
+    #[arg(long = "no-diarize", action = clap::ArgAction::SetTrue)]
+    no_diarize: bool,
+
+    #[command(flatten)]
+    diarize: DiarizeCliArgs,
+}
+
+/// Transcribe an existing WAV from `start` (16 kHz mono PCM16); writes markdown only.
+#[derive(Args)]
+struct ProcessArgs {
+    /// Path to a WAV file produced by this app's `start` command (16 kHz mono PCM16 LE).
+    wav: PathBuf,
+
+    /// Output directory for the markdown file (default: current working directory).
+    #[arg(long, default_value = ".")]
+    dir: PathBuf,
+
+    /// Output markdown basename without extension (default: input WAV stem).
+    #[arg(long)]
+    name: Option<String>,
+
+    #[arg(long, value_enum, default_value_t = WhisperSize::Small)]
+    whisper_model: WhisperSize,
+
+    /// Path to a GGUF model for summarization (`ACTIVE_LISTENER_LLM_MODEL` if unset).
+    #[arg(long, env = "ACTIVE_LISTENER_LLM_MODEL")]
+    llm_model: Option<PathBuf>,
+
+    #[arg(long, default_value_t = false)]
+    verbose: bool,
+
+    /// Force CPU (no Metal).
+    #[arg(long, default_value_t = false)]
+    cpu: bool,
+
+    #[arg(long = "no-diarize", action = clap::ArgAction::SetTrue)]
+    no_diarize: bool,
+
+    #[command(flatten)]
+    diarize: DiarizeCliArgs,
 }
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Record audio until Ctrl+C, transcribe, write markdown.
+    /// Record audio until Ctrl+C (WAV + Whisper markdown after each session).
     Start(StartArgs),
+    /// Transcribe an existing `start`-format WAV; writes markdown (does not rewrite the WAV).
+    Process(ProcessArgs),
     /// Print shell completion script (zsh, bash, or fish).
     Completions {
         #[arg(value_enum)]
         shell: ShellArg,
     },
-    /// Install the binary to ~/.local/bin, configure zsh, and pre-download Whisper weights.
+    /// Install the binary to ~/.local/bin, configure zsh, and pre-download Whisper weights (and sherpa-onnx diarization models when built with `diarize`).
     Install {
         /// Whisper checkpoint to cache from Hugging Face (same as `start --whisper-model`).
-        #[arg(long, value_enum, default_value_t = WhisperSize::Medium)]
+        #[arg(long, value_enum, default_value_t = WhisperSize::Small)]
         whisper_model: WhisperSize,
     },
+    /// Remove `~/.local/bin/active-listener`, undo install-time `~/.zshrc` snippets, and delete all cached `openai/whisper-*` Hugging Face hub folders.
+    Uninstall,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -216,17 +321,150 @@ fn cmd_install(whisper_model: WhisperSize) -> Result<()> {
 
     let which: WhichModel = whisper_model.into();
     println!(
-        "\nPre-downloading Whisper weights ({whisper_model:?}) from Hugging Face…"
+        "\nDownloading Whisper model weights ({whisper_model:?}) from Hugging Face…"
     );
-    transcribe::ensure_whisper_artifacts(which).context("download Whisper model")?;
+    ensure_whisper_artifacts(which).context("download Whisper model")?;
     println!("Whisper model cached.");
+
+    #[cfg(feature = "diarize")]
+    {
+        println!(
+            "\nDownloading speaker diarization models (sherpa-onnx: segmentation + NeMo Titanet large)…"
+        );
+        active_listener::diarize::ensure_diarize_models(
+            true,
+            &DiarizeParams::default(),
+        )
+        .context("download diarization models")?;
+        println!("Diarization models cached.");
+    }
 
     println!("\nDone. Run: source ~/.zshrc");
     Ok(())
 }
 
+/// Snippets appended by `install` (must match exactly for a clean undo).
+const INSTALL_ZSHRC_PATH_SNIPPET: &str = "\n# active-listener PATH\nexport PATH=\"$HOME/.local/bin:$PATH\"\n";
+const INSTALL_ZSHRC_COMPLETIONS_SNIPPET: &str =
+    "\n# active-listener completions\nsource <(active-listener completions zsh)\n";
+
+fn cmd_uninstall() -> Result<()> {
+    use std::fs;
+
+    let home = home_dir().context("could not determine home directory")?;
+    let dest = home.join(".local/bin/active-listener");
+    if dest.is_file() {
+        fs::remove_file(&dest)
+            .with_context(|| format!("remove {}", dest.display()))?;
+        println!("Removed {}", dest.display());
+    } else {
+        println!(
+            "Binary not found at {} (already removed or never installed).",
+            dest.display()
+        );
+    }
+
+    let zshrc_path = home.join(".zshrc");
+    if zshrc_path.is_file() {
+        let content = fs::read_to_string(&zshrc_path)
+            .with_context(|| format!("read {}", zshrc_path.display()))?;
+        let mut new_content = content.clone();
+        new_content = new_content.replace(INSTALL_ZSHRC_PATH_SNIPPET, "");
+        new_content = new_content.replace(INSTALL_ZSHRC_COMPLETIONS_SNIPPET, "");
+        if new_content != content {
+            fs::write(&zshrc_path, new_content)
+                .with_context(|| format!("write {}", zshrc_path.display()))?;
+            println!(
+                "Removed active-listener PATH/completions snippets from {}",
+                zshrc_path.display()
+            );
+        } else {
+            println!(
+                "No matching active-listener snippets in {} (nothing to change).",
+                zshrc_path.display()
+            );
+        }
+    } else {
+        println!(
+            "{} not found (skipping shell snippet cleanup).",
+            zshrc_path.display()
+        );
+    }
+
+    let n = delete_all_openai_whisper_hub_caches().context("remove OpenAI Whisper hub caches")?;
+    if n == 0 {
+        println!("No openai/whisper-* Hugging Face hub folders found (nothing to remove).");
+    } else {
+        println!(
+            "Removed {n} openai/whisper-* {} from Hugging Face hub.",
+            if n == 1 {
+                "cache directory"
+            } else {
+                "cache directories"
+            },
+        );
+    }
+
+    Ok(())
+}
+
 fn home_dir() -> Option<std::path::PathBuf> {
     std::env::var_os("HOME").map(std::path::PathBuf::from)
+}
+
+/// When neither `--mic` nor `--system-audio` was passed, ask on an interactive terminal.
+fn prompt_audio_sources(cli: &mut StartArgs) -> Result<()> {
+    if cli.mic || cli.system_audio {
+        return Ok(());
+    }
+
+    let stdin = io::stdin();
+    if !stdin.is_terminal() {
+        anyhow::bail!(
+            "Select an audio source: pass `--mic`, `--system-audio`, or both (non-interactive stdin)."
+        );
+    }
+
+    let sys_ok = system_audio_supported();
+    println!(
+        "{}",
+        style("No audio source given. Choose what to record:").cyan().bold()
+    );
+    println!("  1) Microphone only");
+    if sys_ok {
+        println!("  2) System audio only");
+        println!("  3) Microphone + system audio (default)");
+    } else {
+        println!(
+            "  2) System audio only (unavailable in this build — will record mic-only if you pick 3)"
+        );
+        println!("  3) Microphone + system audio attempt (default, mic only)");
+    }
+    print!("Enter 1, 2, or 3 [3]: ");
+    io::stdout().flush().context("flush stdout")?;
+
+    let mut line = String::new();
+    stdin
+        .lock()
+        .read_line(&mut line)
+        .context("read choice from stdin")?;
+
+    let choice = line.trim();
+    let n = if choice.is_empty() { "3" } else { choice };
+
+    match n {
+        "1" => cli.mic = true,
+        "2" => cli.system_audio = true,
+        "3" => {
+            cli.mic = true;
+            cli.system_audio = true;
+        }
+        _ => {
+            anyhow::bail!("Invalid choice {n:?}: expected 1, 2, or 3");
+        }
+    }
+
+    Ok(())
 }
 
 fn output_path(args: &StartArgs) -> PathBuf {
@@ -235,6 +473,164 @@ fn output_path(args: &StartArgs) -> PathBuf {
         .clone()
         .unwrap_or_else(|| chrono::Local::now().format("%Y-%m-%d_%H%M%S").to_string());
     args.dir.join(format!("{stem}.md"))
+}
+
+fn process_output_path(args: &ProcessArgs) -> PathBuf {
+    let stem = args.name.clone().unwrap_or_else(|| {
+        args.wav
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(String::from)
+            .unwrap_or_else(|| chrono::Local::now().format("%Y-%m-%d_%H%M%S").to_string())
+    });
+    args.dir.join(format!("{stem}.md"))
+}
+
+fn eprint_num_speakers_notes(no_diarize: bool, num_speakers: Option<u32>) {
+    if num_speakers.is_some() {
+        if no_diarize {
+            eprintln!(
+                "{}",
+                style("Note: `--num-speakers` is ignored with `--no-diarize`.")
+                    .yellow()
+            );
+        } else if !cfg!(feature = "diarize") {
+            eprintln!(
+                "{}",
+                style(
+                    "Note: `--num-speakers` is ignored (build without `--features diarize`; speaker labels disabled).",
+                )
+                .yellow()
+            );
+        }
+    }
+}
+
+/// Whisper + optional diarization + LLM + markdown; used after capture or when loading a WAV.
+struct MeetingFromSamplesOpts {
+    out_md: PathBuf,
+    wav_path_for_success_line: PathBuf,
+    whisper_model: WhisperSize,
+    llm_model: Option<PathBuf>,
+    verbose: bool,
+    cpu: bool,
+    no_diarize: bool,
+    /// Diarization settings; only consumed when built with `--features diarize`.
+    #[cfg_attr(not(feature = "diarize"), allow(dead_code))]
+    diarize: DiarizeParams,
+    /// Wall time for `start`, or audio length for `process`.
+    meeting_duration: Option<Duration>,
+}
+
+fn transcribe_samples_to_markdown(samples: Vec<f32>, opts: MeetingFromSamplesOpts) -> Result<()> {
+    let diarize_wanted = !opts.no_diarize;
+    let diarize_runs = diarize_wanted && cfg!(feature = "diarize");
+
+    if diarize_wanted && !cfg!(feature = "diarize") {
+        eprintln!(
+            "{}",
+            style(
+                "Note: speaker diarization is on by default after recording, but this binary was built without `--features diarize`; rebuild to enable speaker labels.",
+            )
+            .yellow()
+        );
+    }
+
+    let device = pick_device(opts.cpu).context("device")?;
+    if opts.verbose {
+        eprintln!("Using device: {device:?}");
+    }
+
+    let which: WhichModel = opts.whisper_model.into();
+    let whisper_label = format!("{:?}", opts.whisper_model).to_lowercase();
+
+    let samples = Arc::new(samples);
+
+    #[cfg(feature = "diarize")]
+    let diarize_join: Option<DiarizeLabelsJoinHandle> = if diarize_runs {
+        let s = Arc::clone(&samples);
+        let cfg = opts.diarize.clone();
+        let verb = opts.verbose;
+        Some(thread::spawn(move || {
+            diarize::diarize_samples(&s, &cfg, verb).map(|v| {
+                v.into_iter()
+                    .map(|d| (d.start_sec, d.end_sec, d.speaker))
+                    .collect()
+            })
+        }))
+    } else {
+        None
+    };
+    #[cfg(not(feature = "diarize"))]
+    let diarize_join: Option<DiarizeLabelsJoinHandle> = None;
+
+    let audio_secs = samples.len() as f64 / WHISPER_SAMPLE_RATE as f64;
+    let bar = indicatif::ProgressBar::new_spinner();
+    if diarize_runs {
+        bar.set_message(format!(
+            "Whisper + speaker diarization ({audio_secs:.1}s audio)…"
+        ));
+    } else {
+        bar.set_message(format!(
+            "Transcribing {audio_secs:.1}s of audio with Whisper…"
+        ));
+    }
+    bar.enable_steady_tick(Duration::from_millis(100));
+    let segments = transcribe_pcm_samples(&samples, which, &device, 299_792_458, opts.verbose);
+    bar.finish_and_clear();
+    let segments = segments.context("transcribe")?;
+
+    let speaker_labels: Vec<(f64, f64, String)> = if let Some(h) = diarize_join {
+        let joined = h
+            .join()
+            .map_err(|_| anyhow::anyhow!("speaker diarization thread panicked"))?;
+        joined.context("speaker diarization")?
+    } else {
+        Vec::new()
+    };
+
+    let transcript: String = segments
+        .iter()
+        .map(|s| s.text.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    let llm_md = if let Some(ref p) = opts.llm_model {
+        let b = indicatif::ProgressBar::new_spinner();
+        b.set_message("Summarizing with local LLM…");
+        b.enable_steady_tick(Duration::from_millis(100));
+        let r = summarize::summarize_with_gguf(p, &transcript, &device);
+        b.finish_and_clear();
+        Some(r.context("LLM summarize")?)
+    } else {
+        None
+    };
+
+    let title = format!(
+        "# Meeting notes — {}",
+        chrono::Local::now().format("%Y-%m-%d %H:%M")
+    );
+    let doc = MeetingDoc {
+        title_line: title,
+        whisper_model: whisper_label,
+        duration: opts.meeting_duration,
+        llm_markdown: llm_md,
+        segments,
+        speaker_labels,
+    };
+    write_meeting_markdown(&opts.out_md, &doc).context("write markdown")?;
+
+    println!(
+        "{}",
+        style(format!(
+            "Saved notes to {} (WAV: {})",
+            opts.out_md.display(),
+            opts.wav_path_for_success_line.display()
+        ))
+        .green()
+        .bold()
+    );
+    Ok(())
 }
 
 fn main() -> Result<()> {
@@ -253,15 +649,21 @@ fn main() -> Result<()> {
         Commands::Install { whisper_model } => {
             cmd_install(whisper_model)?;
         }
+        Commands::Uninstall => {
+            cmd_uninstall()?;
+        }
         Commands::Start(args) => {
             run_start(args)?;
+        }
+        Commands::Process(args) => {
+            run_process(args)?;
         }
     }
 
     Ok(())
 }
 
-fn run_start(cli: StartArgs) -> Result<()> {
+fn run_start(mut cli: StartArgs) -> Result<()> {
     if cli.list_devices {
         for n in list_input_devices()? {
             println!("{n}");
@@ -269,18 +671,27 @@ fn run_start(cli: StartArgs) -> Result<()> {
         return Ok(());
     }
 
-    if cli.no_mic {
-        anyhow::bail!("--no-mic is not supported yet (microphone required).");
-    }
+    prompt_audio_sources(&mut cli).context("audio source selection")?;
 
-    let capture_system = !cli.no_system_audio;
-    if capture_system && !system_audio_supported() {
+    if !cli.mic && cli.device.is_some() {
         eprintln!(
             "{}",
-            style("System audio capture unavailable in this build; recording microphone only.")
+            style("Note: `--device` is ignored without `--mic`.")
                 .yellow()
         );
     }
+
+    if cli.system_audio && !system_audio_supported() {
+        eprintln!(
+            "{}",
+            style("System audio capture unavailable in this build; only microphone samples will be used.")
+                .yellow()
+        );
+    }
+
+    validate_diarize_cli(&cli.diarize)?;
+
+    eprint_num_speakers_notes(cli.no_diarize, cli.diarize.num_speakers);
 
     let stop = Arc::new(AtomicBool::new(false));
     let stop_c = stop.clone();
@@ -320,80 +731,78 @@ fn run_start(cli: StartArgs) -> Result<()> {
     let t0 = Instant::now();
     let pcm = record_until_stop(
         cli.device.as_deref(),
-        capture_system && system_audio_supported(),
+        cli.mic,
+        cli.system_audio,
         stop.clone(),
         max_d,
+        cli.verbose,
     )
     .context("record audio")?;
     pb.finish_and_clear();
     let _ = rec_tick.join();
 
-    if cli.mode == Mode::Realtime {
-        eprintln!(
-            "{}",
-            style("Note: realtime segment streaming is not implemented; full-file transcription runs after recording.")
-                .yellow()
-        );
-    }
-
     if pcm.samples.is_empty() {
         anyhow::bail!("No audio captured.");
     }
 
-    let device = pick_device(cli.cpu).context("device")?;
-    if cli.verbose {
-        eprintln!("Using device: {device:?}");
-    }
+    let out_md = output_path(&cli);
+    let out_wav = out_md.with_extension("wav");
 
-    let which: WhichModel = cli.whisper_model.into();
-    let whisper_label = format!("{:?}", cli.whisper_model).to_lowercase();
+    let Pcm16kMono { samples } = pcm;
 
-    let audio_secs = pcm.samples.len() as f64 / audio::WHISPER_SAMPLE_RATE as f64;
-    let bar = indicatif::ProgressBar::new_spinner();
-    bar.set_message(format!(
-        "Transcribing {audio_secs:.1}s of audio with Whisper…"
-    ));
-    bar.enable_steady_tick(Duration::from_millis(100));
-    let segments = transcribe_pcm_samples(&pcm.samples, which, &device, 299_792_458, cli.verbose)
-        .context("transcribe")?;
-    bar.finish_and_clear();
-
-    let transcript: String = segments
-        .iter()
-        .map(|s| s.text.as_str())
-        .collect::<Vec<_>>()
-        .join(" ");
-
-    let llm_md = if let Some(ref p) = cli.llm_model {
-        let b = indicatif::ProgressBar::new_spinner();
-        b.set_message("Summarizing with local LLM…");
-        b.enable_steady_tick(Duration::from_millis(100));
-        let r = summarize::summarize_with_gguf(p, &transcript, &device);
-        b.finish_and_clear();
-        Some(r.context("LLM summarize")?)
-    } else {
-        None
-    };
-
-    let out = output_path(&cli);
-    let title = format!(
-        "# Meeting notes — {}",
-        chrono::Local::now().format("%Y-%m-%d %H:%M")
-    );
-    let doc = MeetingDoc {
-        title_line: title,
-        whisper_model: whisper_label,
-        duration: Some(t0.elapsed()),
-        llm_markdown: llm_md,
-        segments,
-    };
-    write_meeting_markdown(&out, &doc).context("write markdown")?;
-
+    write_wav_16k_mono(&out_wav, &samples).context("write WAV")?;
     println!(
         "{}",
-        style(format!("Saved notes to {}", out.display()))
+        style(format!("Saved recording to {}", out_wav.display()))
             .green()
             .bold()
     );
+
+    transcribe_samples_to_markdown(
+        samples,
+        MeetingFromSamplesOpts {
+            out_md,
+            wav_path_for_success_line: out_wav,
+            whisper_model: cli.whisper_model,
+            llm_model: cli.llm_model,
+            verbose: cli.verbose,
+            cpu: cli.cpu,
+            no_diarize: cli.no_diarize,
+            diarize: diarize_params_from_cli(&cli.diarize),
+            meeting_duration: Some(t0.elapsed()),
+        },
+    )?;
+
     Ok(())
+}
+
+fn run_process(cli: ProcessArgs) -> Result<()> {
+    validate_diarize_cli(&cli.diarize)?;
+
+    eprint_num_speakers_notes(cli.no_diarize, cli.diarize.num_speakers);
+
+    let Pcm16kMono { samples } =
+        read_wav_16k_mono(&cli.wav).with_context(|| format!("read {}", cli.wav.display()))?;
+    if samples.is_empty() {
+        anyhow::bail!("Input WAV has no audio samples.");
+    }
+
+    let out_md = process_output_path(&cli);
+    let audio_duration =
+        Duration::from_secs_f64(samples.len() as f64 / WHISPER_SAMPLE_RATE as f64);
+
+    transcribe_samples_to_markdown(
+        samples,
+        MeetingFromSamplesOpts {
+            out_md,
+            wav_path_for_success_line: cli.wav,
+            whisper_model: cli.whisper_model,
+            llm_model: cli.llm_model,
+            verbose: cli.verbose,
+            cpu: cli.cpu,
+            no_diarize: cli.no_diarize,
+            diarize: diarize_params_from_cli(&cli.diarize),
+            meeting_duration: Some(audio_duration),
+        },
+    )
 }

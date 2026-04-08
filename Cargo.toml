@@ -4,14 +4,25 @@ version = "0.1.0"
 edition = "2021"
 description = "Record mic + system audio, transcribe with Whisper (candle), optional local LLM notes"
 rust-version = "1.74"
+# Embeds Swift stdlib rpaths on macOS so ScreenCaptureKit-linked binaries run from the shell.
+build = "build.rs"
 
 [features]
-default = ["metal"]
+default = ["metal", "linux-system-audio", "diarize"]
 # Apple Silicon GPU for candle (optional; build with --no-default-features on non-macOS)
 metal = [
     "candle-core/metal",
     "candle-nn/metal",
     "candle-transformers/metal",
+]
+# PipeWire capture for Linux (requires libpipewire dev packages; disabled for `cross` Linux builds).
+linux-system-audio = ["dep:pipewire"]
+# Offline speaker diarization (sherpa-onnx + ONNX Runtime; larger binary; model download on first use). In default features; use `--no-default-features` plus only the features you need to drop it.
+diarize = [
+    "dep:sherpa-onnx",
+    "dep:ureq",
+    "dep:tar",
+    "dep:bzip2",
 ]
 
 [dependencies]
@@ -42,3 +53,22 @@ crossbeam-channel = "0.5"
 anyhow = "1"
 chrono = "0.4"
 ctrlc = "3"
+
+# Speaker diarization: ONNX pipeline + HTTP download of model archives from GitHub releases.
+sherpa-onnx = { version = "1.12", optional = true }
+ureq = { version = "2.12", optional = true, default-features = false, features = ["tls", "gzip"] }
+# Extract sherpa-onnx segmentation release tarball (.tar.bz2).
+bzip2 = { version = "0.5", optional = true }
+tar = { version = "0.4", optional = true, default-features = false }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Native macOS ScreenCaptureKit bindings for desktop audio capture.
+screencapturekit = { version = "1", features = ["macos_13_0"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# WASAPI loopback capture for Windows system audio.
+wasapi = "0.23"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# PipeWire bindings for Linux system-audio capture (see `linux-system-audio` feature).
+pipewire = { version = "0.9", optional = true }
