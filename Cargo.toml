@@ -1,6 +1,6 @@
 [package]
 name = "active-listener"
-version = "0.1.0"
+version = "0.1.2"
 edition = "2021"
 description = "Record mic + system audio, transcribe with Whisper (candle)"
 rust-version = "1.74"

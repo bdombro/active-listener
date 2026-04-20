@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Bump active-listener semver in Cargo.toml (major | minor | patch) and refresh Cargo.lock.
+# Bump active-listener semver in Cargo.toml (major | minor | patch), refresh Cargo.lock,
+# commit the bump, and create an annotated tag vX.Y.Z (same form as scripts/release.sh).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -55,4 +56,8 @@ path.write_text("".join(out))
 PY
 
 cargo check -q
+
+git add Cargo.toml Cargo.lock
+git commit -m "chore: bump version to ${NEW}"
+
 echo "Version ${CURRENT} -> ${NEW}"
