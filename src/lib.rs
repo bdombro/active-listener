@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 /// Default sherpa-onnx clustering threshold when speaker count is unknown (`start --diarize-threshold`).
 /// Higher values merge more aggressively (fewer speakers); lower values split more (more speakers).
-pub const DEFAULT_DIARIZE_CLUSTER_THRESHOLD: f32 = 0.55;
+pub const DEFAULT_DIARIZE_CLUSTER_THRESHOLD: f32 = 0.9;
 
 /// Sherpa default: speech shorter than this (seconds) is dropped before clustering.
 pub const DEFAULT_DIARIZE_MIN_DURATION_ON: f32 = 0.3;

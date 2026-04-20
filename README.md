@@ -2,6 +2,8 @@
 
 Record and transcribe meetings using a CLI, fully local. Press Ctrl+C to stop — you get a WAV and a Whisper-transcribed markdown file. No cloud, no subscriptions.
 
+Why use over WhisperX/Python? See [Architecture](#architecture)
+
 ## Quick start
 
 Download the binary for your platform from the [releases page](https://github.com/bdombro/active-listener/releases):
@@ -85,7 +87,12 @@ whisper_model: small
 
 ### With `--diarize`
 
-Whisper and the speaker diarizer run in parallel; labels are merged into the transcript by timestamp overlap.
+How it works:
+- Whisper and the speaker diarizer run in parallel; labels are merged into the transcript by timestamp overlap.
+
+Tips:
+- Diarization isn't great. Can be improved by having an LLM "improve diarization on this meeting transcript"
+
 
 ```markdown
 ---
@@ -130,7 +137,7 @@ All flags work on both `start` and `process` unless noted.
 | `--whisper-model` | `small` | `tiny` / `base` / `small` / `medium` / `large` |
 | `--diarize` | off | Add speaker labels via sherpa-onnx |
 | `--num-speakers N` | auto | Fix speaker count (more reliable than threshold mode) |
-| `--diarize-threshold` | `0.55` | Cluster merge/split — higher → fewer speakers |
+| `--diarize-threshold` | `0.9` | Cluster merge/split — higher → fewer speakers |
 | `--diarize-embedding PATH` | auto | Custom speaker embedding ONNX (see below) |
 | `--duration SECS` | unlimited | Auto-stop after N seconds (`start` only) |
 | `--device NAME` | default | Mic device name — see `--list-devices` |
@@ -146,7 +153,7 @@ Powered by [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) (pyannote segmen
 Offline diarization is fuzzy — one threshold cannot perfectly split every conversation. Practical tips:
 
 - **`--num-speakers N`** is the most reliable option when you know the count (two-person call, panel of three, etc.).
-- **`--diarize-threshold`** (default `0.55`) is the fallback knob: higher merges more aggressively (fewer speakers), lower splits more.
+- **`--diarize-threshold`** (default `0.9`) is the fallback knob: higher merges more aggressively (fewer speakers), lower splits more.
 - **`--diarize-embedding`** — swap in another sherpa-onnx embedding ONNX if you want to experiment (e.g. [Titanet large](https://github.com/k2-fsa/sherpa-onnx/releases/tag/speaker-recongition-models) for better accuracy at the cost of size and speed).
 
 Expect imperfect results in difficult audio (crosstalk, TV in the background, single mixed channel).
@@ -192,6 +199,19 @@ cargo build --release --no-default-features --features metal,linux-system-audio
 
 - Rust 1.74+
 - macOS: Metal is the default GPU backend (`metal` feature). On other platforms build with `--no-default-features` and re-add what you need.
+
+
+## Architecture
+
+Is built on top of:
+- **Candle** (`candle-transformers`) — Whisper transcription in Rust using Hugging Face `openai/whisper-*` weights; **`hf-hub`** fetches and caches those checkpoints.
+- **sherpa-onnx** — ONNX Runtime–backed offline diarization; default segmentation weights are **`sherpa-onnx-pyannote-segmentation-3-0`** (pyannote segmentation 3.0 exported to ONNX), plus a separate default **speaker-embedding** ONNX (NeMo Titanet small).
+
+**Compared to [WhisperX](https://github.com/m-bain/whisperX)**:
+
+- **active-listener** includes audio capture, is a **single native binary** optimized for MacOS with some Linux/Windows support, no hugging-face account or terms-agreement required.
+- **WhisperX** no audio capture, feature-bloated, and is glue-code for a collection of python projects which were never really meant to work well together. Is fragile, has several hidden host requirements (stale FFMpeg, python versions, hugging-face user account and usage/agreement for non-commercial models).
+- Quality: I, personally, did not get better quality with WhisperX over `active-listener`.
 
 ## License
 

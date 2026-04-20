@@ -5,6 +5,10 @@
 _:
     @just --list
 
+# Bump crate version: `just version-bump patch` (or major | minor)
+version-bump kind:
+    ./scripts/version-bump.sh {{kind}}
+
 # Build binary without cross compilation (output: target/release/active-listener)
 build:
     cargo build --release
@@ -22,10 +26,11 @@ install: build
     ./target/release/active-listener install
 
 
-# Create a GitHub release with cross-compiled binary tarballs (requires gh)
-release: build-cross
+# Bump version, cross-build, then create a GitHub release with binary tarballs (requires gh)
+release kind: (version-bump kind) build-cross
     ./scripts/release.sh
 
 # Smoke test the release binary with a sample WAV file
-smoke-test: build
-    ./target/release/active-listener process ./tests/2026-04-08_165818.wav --dir .
+test-smoke: build
+    ./target/release/active-listener process --diarize ./tests/2026-04-08_165818.wav --dir tests
+    ./target/release/active-listener process --diarize ./tests/2026-04-20_102511.wav --dir tests
